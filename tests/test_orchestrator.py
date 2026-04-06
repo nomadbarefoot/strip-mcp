@@ -1,4 +1,4 @@
-"""Tests for StripMCP (core orchestrator)."""
+"""StripMCP orchestrator, registry, and error types."""
 
 from __future__ import annotations
 
@@ -8,11 +8,108 @@ from pathlib import Path
 import pytest
 
 from strip_mcp import StripMCP
-from strip_mcp.errors import ToolCollisionError, ToolNotFoundError
+from strip_mcp.errors import (
+    SchemaFetchError,
+    ServerCrashedError,
+    ServerStartError,
+    StripError,
+    ToolCollisionError,
+    ToolExecutionError,
+    ToolNotFoundError,
+    ToolTimeoutError,
+)
+from strip_mcp.registry import ToolRegistry
 
 MOCK = [sys.executable, str(Path(__file__).parent / "mock_mcp_server.py")]
 MOCK_5 = MOCK + ["--tools", "5"]
-MOCK_FAIL = MOCK + ["--fail", "tool_1"]
+
+
+# ── errors ───────────────────────────────────────────────────────────────────
+
+
+def test_error_hierarchy() -> None:
+    for cls in (
+        ServerStartError,
+        ServerCrashedError,
+        ToolNotFoundError,
+        ToolCollisionError,
+        ToolExecutionError,
+        ToolTimeoutError,
+        SchemaFetchError,
+    ):
+        assert issubclass(cls, StripError)
+
+
+def test_tool_not_found_message_with_suggestion() -> None:
+    exc = ToolNotFoundError("playwright__naviage", "playwright__navigate")
+    assert "playwright__naviage" in str(exc)
+    assert "playwright__navigate" in str(exc)
+
+
+def test_tool_not_found_no_suggestion() -> None:
+    exc = ToolNotFoundError("xyz")
+    assert "xyz" in str(exc)
+    assert "Did you mean" not in str(exc)
+
+
+def test_tool_timeout_message() -> None:
+    exc = ToolTimeoutError("my_tool", 30.0)
+    assert "my_tool" in str(exc)
+    assert "30" in str(exc)
+
+
+def test_tool_execution_error() -> None:
+    exc = ToolExecutionError("my_tool", {"message": "oops"})
+    assert "my_tool" in str(exc)
+
+
+# ── registry ─────────────────────────────────────────────────────────────────
+
+
+def test_register_and_resolve() -> None:
+    reg = ToolRegistry()
+    reg.register("playwright__navigate", "playwright")
+    assert reg.resolve("playwright__navigate") == "playwright"
+
+
+def test_collision_raises() -> None:
+    reg = ToolRegistry()
+    reg.register("tool_a", "server1")
+    with pytest.raises(ToolCollisionError):
+        reg.register("tool_a", "server2")
+
+
+def test_not_found_raises() -> None:
+    reg = ToolRegistry()
+    with pytest.raises(ToolNotFoundError):
+        reg.resolve("nonexistent")
+
+
+def test_not_found_suggestion() -> None:
+    reg = ToolRegistry()
+    reg.register("playwright__navigate", "playwright")
+    exc = pytest.raises(ToolNotFoundError, reg.resolve, "playwright__naviage")
+    assert exc.value.suggestion == "playwright__navigate"
+
+
+def test_deregister_server() -> None:
+    reg = ToolRegistry()
+    reg.register("playwright__navigate", "playwright")
+    reg.register("git__status", "git")
+    reg.deregister_server("playwright")
+    with pytest.raises(ToolNotFoundError):
+        reg.resolve("playwright__navigate")
+    assert reg.resolve("git__status") == "git"
+
+
+def test_all_names() -> None:
+    reg = ToolRegistry()
+    reg.register("a", "s1")
+    reg.register("b", "s2")
+    assert set(reg.all_names()) == {"a", "b"}
+
+
+# ── StripMCP ─────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -21,19 +118,16 @@ async def test_full_three_stage_flow() -> None:
         mcp.add_server("s1", command=MOCK_5)
         await mcp.start()
 
-        # Stage 1
         tools = await mcp.list_tools()
         assert len(tools) == 5
         assert all(t.name.startswith("s1__") for t in tools)
 
-        # Stage 2
         param_tool = next(t for t in tools if t.requires_params)
         schemas = await mcp.get_schemas([param_tool.name])
         assert len(schemas) == 1
         assert schemas[0].name == param_tool.name
         assert "properties" in schemas[0].input_schema
 
-        # Stage 3
         result = await mcp.call(param_tool.name, {"arg_a": "hello"})
         assert result.is_error is False
 
@@ -46,7 +140,7 @@ async def test_list_tools_cached() -> None:
 
         t1 = await mcp.list_tools()
         t2 = await mcp.list_tools()
-        assert t1 is t2  # same object
+        assert t1 is t2
 
 
 @pytest.mark.asyncio
@@ -58,7 +152,7 @@ async def test_refresh_clears_cache() -> None:
         t1 = await mcp.list_tools()
         await mcp.refresh()
         t2 = await mcp.list_tools()
-        assert t1 is not t2  # rebuilt
+        assert t1 is not t2
 
 
 @pytest.mark.asyncio
@@ -115,7 +209,6 @@ async def test_direct_execution_no_params() -> None:
 
         tools = await mcp.list_tools()
         no_param = next(t for t in tools if not t.requires_params)
-        # call with no arguments
         result = await mcp.call(no_param.name)
         assert result.is_error is False
 
@@ -132,11 +225,9 @@ async def test_namespace_false_collision_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_namespace_false_no_collision_works() -> None:
-    mock_3 = MOCK + ["--tools", "3"]
     mock_other = [
         sys.executable,
         "-c",
-        # a mock server with different tool names
         """
 import sys, json
 for line in sys.stdin:

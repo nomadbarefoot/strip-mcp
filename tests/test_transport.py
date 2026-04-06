@@ -1,4 +1,4 @@
-"""Tests for ServerHandle."""
+"""Stdio MCP transport and ServerHandle."""
 
 from __future__ import annotations
 
@@ -7,11 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from strip_mcp.errors import ToolExecutionError
+from strip_mcp.connection.stdio import StdioConnection
+from strip_mcp.errors import ServerStartError, ToolExecutionError, ToolTimeoutError
 from strip_mcp.server import ServerHandle, _requires_params
 
 MOCK = [sys.executable, str(Path(__file__).parent / "mock_mcp_server.py")]
 MOCK_FAIL = MOCK + ["--fail", "tool_1"]
+
+
+# ── _requires_params ──────────────────────────────────────────────────────────
 
 
 def test_requires_params_empty_schema() -> None:
@@ -20,13 +24,63 @@ def test_requires_params_empty_schema() -> None:
 
 
 def test_requires_params_with_properties() -> None:
-    assert _requires_params({"type": "object", "properties": {"url": {"type": "string"}}}) is True
+    assert _requires_params(
+        {"type": "object", "properties": {"url": {"type": "string"}}}
+    ) is True
 
 
 def test_requires_params_required_empty_but_has_props() -> None:
-    # required=[] but props non-empty → requires_params=True (decision #5)
     schema = {"type": "object", "properties": {"opt": {"type": "string"}}, "required": []}
     assert _requires_params(schema) is True
+
+
+# ── StdioConnection ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_initialize_and_list_tools() -> None:
+    conn = StdioConnection(MOCK, "mock")
+    try:
+        result = await conn.initialize()
+        assert "protocolVersion" in result or "serverInfo" in result
+        tools = await conn.list_tools()
+        assert len(tools) == 20
+        assert all("name" in t for t in tools)
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_stdio() -> None:
+    conn = StdioConnection(MOCK, "mock")
+    try:
+        await conn.initialize()
+        result = await conn.call_tool("tool_1", {"arg_a": "hello"}, timeout=5.0)
+        assert result["isError"] is False
+        assert result["content"][0]["text"] == "Called tool_1 successfully"
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_server_start_error() -> None:
+    conn = StdioConnection(["nonexistent_binary_xyz"], "bad")
+    with pytest.raises(ServerStartError):
+        await conn.initialize()
+
+
+@pytest.mark.asyncio
+async def test_tool_timeout() -> None:
+    conn = StdioConnection(MOCK + ["--latency", "2.0"], "slow")
+    try:
+        await conn.initialize()
+        with pytest.raises(ToolTimeoutError):
+            await conn.call_tool("tool_1", {}, timeout=0.1)
+    finally:
+        await conn.close()
+
+
+# ── ServerHandle ──────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -36,14 +90,11 @@ async def test_start_and_tool_briefs() -> None:
         await handle.start()
         briefs = handle.tool_briefs()
         assert len(briefs) == 20
-        # tool_0, tool_5, tool_10, tool_15 are no-param tools (i % 5 == 0)
         no_param = [b for b in briefs if not b.requires_params]
         assert len(no_param) == 4
         param_tools = [b for b in briefs if b.requires_params]
         assert len(param_tools) == 16
-        # all names namespaced
         assert all(b.name.startswith("mock__") for b in briefs)
-        # staged=True → full_schema is None
         assert all(b.full_schema is None for b in briefs)
     finally:
         await handle.stop()
@@ -111,7 +162,7 @@ async def test_namespace_false() -> None:
 
 
 @pytest.mark.asyncio
-async def test_refresh() -> None:
+async def test_server_refresh() -> None:
     handle = ServerHandle("mock", command=MOCK)
     try:
         await handle.start()

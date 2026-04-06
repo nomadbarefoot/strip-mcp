@@ -26,14 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from strip_mcp import StripMCP
 from strip_mcp.errors import StripError
+from strip_mcp.node_discovery import discover_node_mcp_servers
 
 ROOT = Path(__file__).resolve().parent.parent
-
-NODE = ROOT / "node_modules"
-
-
-def _cli(pkg_subpath: str) -> Path:
-    return ROOT / "node_modules" / pkg_subpath
 
 
 def approx_tokens(text: str) -> int:
@@ -82,15 +77,13 @@ async def build_full_schemas_json(mcp: StripMCP, tools: list) -> str:
 
 
 async def run() -> BenchmarkReport:
-    paths = {
-        "playwright": _cli("@playwright/mcp/cli.js"),
-        "wiki": _cli("wikipedia-mcp/dist/index.js"),
-        "memory": _cli("@modelcontextprotocol/server-memory/dist/index.js"),
-    }
-    missing = [k for k, p in paths.items() if not p.is_file()]
-    if missing:
+    discovered = discover_node_mcp_servers(ROOT)
+    need = {"playwright", "wiki", "memory"}
+    have = {d.server_id for d in discovered}
+    if not need <= have:
         raise SystemExit(
-            f"Missing node_modules for: {missing}. Run: cd {ROOT} && npm install && npx playwright install chromium"
+            f"Need MCP servers {sorted(need)}, found {sorted(have)}. "
+            f"Run: cd {ROOT} && npm install && npx playwright install chromium"
         )
 
     tasks_out: list[TaskResult] = []
@@ -98,9 +91,8 @@ async def run() -> BenchmarkReport:
 
     t0 = time.perf_counter()
     async with StripMCP(default_timeout=120.0) as mcp:
-        mcp.add_server("playwright", command=["node", str(paths["playwright"])])
-        mcp.add_server("wiki", command=["node", str(paths["wiki"])])
-        mcp.add_server("memory", command=["node", str(paths["memory"])])
+        for d in discovered:
+            mcp.add_server(d.server_id, command=d.command)
 
         await mcp.start()
         startup_ms = (time.perf_counter() - t0) * 1000
@@ -217,7 +209,7 @@ async def run() -> BenchmarkReport:
         agent_tok = max(1, agent_schema_chars // 4)
 
         report = BenchmarkReport(
-            servers=["playwright", "wiki", "memory"],
+            servers=sorted(have),
             tool_count=len(tools),
             startup_ms=round(startup_ms, 2),
             list_tools_ms=round(list_tools_ms, 2),

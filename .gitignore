@@ -9,6 +9,9 @@ dist/
 .mypy_cache/
 .ruff_cache/
 .playwright-mcp/
+# Generated benchmark JSON (see docs/BENCHMARKS_AND_TESTS.md)
+examples/*report*.json
+examples/benchmark_run*.json
 *.egg
 .DS_Store
 .cursor/

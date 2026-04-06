@@ -303,11 +303,10 @@ strip-mcp/
 │           ├── __init__.py
 │           └── anthropic.py     # Anthropic SDK adapter (Phase 2)
 ├── tests/
-│   ├── test_core.py
-│   ├── test_server.py
-│   ├── test_registry.py
-│   ├── test_connection_stdio.py
-│   ├── test_errors.py
+│   ├── conftest.py
+│   ├── test_orchestrator.py
+│   ├── test_transport.py
+│   ├── test_setup_discovery.py
 │   └── mock_mcp_server.py       # minimal MCP server for testing (stdio, responds to initialize + tools/list + call_tool)
 └── examples/
     ├── basic_usage.py
