@@ -9,7 +9,7 @@ Python middleware for the [Model Context Protocol](https://modelcontextprotocol.
 | `src/strip_mcp/` | Library, transports (`connection/`), CLI (`cli.py`), macOS setup helpers (`setup/`) |
 | `tests/` | Pytest suite |
 | `examples/` | Benchmarks and runnable scripts |
-| `docs/` | Benchmarks/tests notes and design write-ups |
+| `docs/` | [Architecture](docs/ARCHITECTURE.md), benchmarks/tests notes |
 
 ## Quick start
 
@@ -30,7 +30,7 @@ npm install
 npx playwright install chromium
 ```
 
-See `examples/` for usage. **Tests, benchmarks, and metrics:** [`docs/BENCHMARKS_AND_TESTS.md`](docs/BENCHMARKS_AND_TESTS.md). Design notes: [`docs/STRIP_V2_plan.md`](docs/STRIP_V2_plan.md).
+See `examples/` for usage. **Architecture and design:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). **Tests and benchmarks:** [`docs/BENCHMARKS_AND_TESTS.md`](docs/BENCHMARKS_AND_TESTS.md).
 
 **Node MCP auto-discovery:** `discover_node_mcp_servers(project_root)` reads `package.json` and registers known npm MCP packages whose entry files exist under `node_modules` (see `src/strip_mcp/node_discovery.py`). Known default mappings are exposed as `DEFAULT_NODE_MCP_REGISTRY` for extension.
 

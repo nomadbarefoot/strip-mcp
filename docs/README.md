@@ -2,5 +2,5 @@
 
 | Document | Description |
 |----------|-------------|
-| [BENCHMARKS_AND_TESTS.md](BENCHMARKS_AND_TESTS.md) | How tests and benchmark scripts are organized and run |
-| [STRIP_V2_plan.md](STRIP_V2_plan.md) | Design notes for staged tool delivery |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | **Start here:** motivation, staged discovery, components, transports, CLI, roadmap |
+| [BENCHMARKS_AND_TESTS.md](BENCHMARKS_AND_TESTS.md) | Pytest layout, how to run benchmarks, generated artifacts |
