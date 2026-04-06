@@ -1,0 +1,15 @@
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.playwright-mcp/
+*.egg
+.DS_Store
+.cursor/
+.claude/
