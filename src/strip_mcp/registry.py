@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import logging
-
 from .errors import ToolCollisionError, ToolNotFoundError
-
-logger = logging.getLogger(__name__)
 
 _LEVENSHTEIN_MAX = 5  # only suggest if edit distance ≤ this
 

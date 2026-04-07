@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import os
 import platform
 import sys
 from dataclasses import dataclass
@@ -265,6 +267,202 @@ def _build_plans(
     return plans, errors
 
 
+_CLAUDE_CODE_SETTINGS = Path.home() / ".claude" / "settings.json"
+_CLAUDE_CODE_ENV_VAR = "STRIP_MCP_CLAUDE_CODE_CONFIG"
+
+
+def _claude_code_settings_path(override: str | None = None) -> Path:
+    if override:
+        return Path(override).expanduser().resolve()
+    env = os.environ.get(_CLAUDE_CODE_ENV_VAR)
+    if env:
+        return Path(env).expanduser().resolve()
+    return _CLAUDE_CODE_SETTINGS
+
+
+def _run_install(args: argparse.Namespace) -> int:
+    import shutil as _shutil
+
+    from .proxy.config import DEFAULT_CONFIG_PATH, ProxyConfig, ServerEntry
+    from .setup.hosts import utc_timestamp_compact
+
+    settings_path = _claude_code_settings_path(getattr(args, "claude_config", None))
+    proxy_config_path = Path(args.proxy_config).expanduser().resolve() if args.proxy_config else DEFAULT_CONFIG_PATH
+    dry_run: bool = args.dry_run
+
+    # Load existing Claude Code settings
+    if settings_path.exists():
+        try:
+            host_config: dict = json.loads(settings_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"Failed to read {settings_path}: {exc}", file=sys.stderr)
+            return 1
+    else:
+        host_config = {}
+
+    existing_mcps: dict = host_config.get("mcpServers", {})
+
+    # Resolve strip-mcp binary (absolute path, required since Claude Code may not share PATH)
+    strip_bin = _shutil.which("strip-mcp") or str(Path(sys.executable).parent / "strip-mcp")
+
+    # Build ProxyConfig from existing mcpServers (if any)
+    if existing_mcps:
+        servers: dict[str, ServerEntry] = {}
+        for sid, entry in existing_mcps.items():
+            if not isinstance(entry, dict):
+                continue
+            cmd_str = entry.get("command", "")
+            args_list = entry.get("args", [])
+            command = [cmd_str, *args_list] if cmd_str else []
+            if command:
+                servers[sid] = ServerEntry(command=command, env=entry.get("env"))
+        proxy_config = ProxyConfig(servers=servers, original_mcp_servers=dict(existing_mcps))
+    elif proxy_config_path.exists():
+        # No mcpServers in settings, but a proxy config already exists — use it
+        try:
+            proxy_config = ProxyConfig.load(proxy_config_path)
+        except Exception as exc:
+            print(f"Failed to load existing proxy config {proxy_config_path}: {exc}", file=sys.stderr)
+            return 1
+        # Preserve original_mcp_servers if already set
+    else:
+        print("No mcpServers in Claude Code settings and no proxy config found.", file=sys.stderr)
+        print(f"Add servers to {proxy_config_path} first, then re-run install.", file=sys.stderr)
+        return 1
+
+    # Build new settings.json with single strip entry
+    new_mcp_servers: dict = {
+        "strip": {
+            "command": strip_bin,
+            "args": ["proxy", "--config", str(proxy_config_path)],
+        }
+    }
+    new_config = {**host_config, "mcpServers": new_mcp_servers}
+
+    # Preview
+    print(f"Claude Code settings: {settings_path}")
+    print(f"Proxy config:         {proxy_config_path}")
+    print(f"strip-mcp binary:     {strip_bin}")
+    print(f"\nUpstream servers to proxy ({len(proxy_config.servers)}):")
+    for sid, entry in proxy_config.servers.items():
+        print(f"  {sid}: {' '.join(entry.command)}")
+    if not proxy_config.servers:
+        print("  (none — populate proxy config before use)")
+    print(f"\nmcpServers will become:")
+    print(f"  strip → {strip_bin} proxy --config {proxy_config_path}")
+
+    if existing_mcps:
+        print(f"\nOriginal mcpServers ({len(existing_mcps)} entries) will be backed up to proxy config.")
+
+    if dry_run:
+        print("\n[dry-run] No files written.")
+        return 0
+
+    timestamp = utc_timestamp_compact()
+
+    # 1. Save ProxyConfig
+    proxy_config.save(proxy_config_path)
+    print(f"\nSaved proxy config → {proxy_config_path}")
+
+    # 2. Backup and rewrite settings.json
+    if settings_path.exists():
+        backup = settings_path.with_name(f"{settings_path.name}.bak.{timestamp}")
+        _shutil.copy2(settings_path, backup)
+        print(f"Backup             → {backup}")
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = settings_path.with_name(f"{settings_path.name}.tmp")
+    tmp.write_text(json.dumps(new_config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, settings_path)
+    print(f"Updated settings   → {settings_path}")
+    print("\nDone. Restart Claude Code to apply.")
+    return 0
+
+
+def _run_uninstall(args: argparse.Namespace) -> int:
+    import shutil as _shutil
+
+    from .proxy.config import DEFAULT_CONFIG_PATH, ProxyConfig
+    from .setup.hosts import utc_timestamp_compact
+
+    settings_path = _claude_code_settings_path(getattr(args, "claude_config", None))
+    proxy_config_path = Path(args.proxy_config).expanduser().resolve() if args.proxy_config else DEFAULT_CONFIG_PATH
+    dry_run: bool = args.dry_run
+
+    if not proxy_config_path.exists():
+        print(f"No proxy config found at {proxy_config_path}. Nothing to uninstall.", file=sys.stderr)
+        return 1
+
+    try:
+        proxy_config = ProxyConfig.load(proxy_config_path)
+    except Exception as exc:
+        print(f"Failed to load proxy config: {exc}", file=sys.stderr)
+        return 1
+
+    if not settings_path.exists():
+        print(f"Claude Code settings not found at {settings_path}.", file=sys.stderr)
+        return 1
+
+    try:
+        host_config: dict = json.loads(settings_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Failed to read {settings_path}: {exc}", file=sys.stderr)
+        return 1
+
+    original = proxy_config.original_mcp_servers
+    new_config = {**host_config, "mcpServers": original}
+    if not original:
+        new_config.pop("mcpServers", None)
+
+    print(f"Claude Code settings: {settings_path}")
+    print(f"Restoring mcpServers ({len(original)} entries):")
+    for sid in original:
+        print(f"  {sid}")
+    if not original:
+        print("  (none — mcpServers key will be removed)")
+
+    if dry_run:
+        print("\n[dry-run] No files written.")
+        return 0
+
+    timestamp = utc_timestamp_compact()
+    backup = settings_path.with_name(f"{settings_path.name}.bak.{timestamp}")
+    _shutil.copy2(settings_path, backup)
+    print(f"\nBackup → {backup}")
+
+    tmp = settings_path.with_name(f"{settings_path.name}.tmp")
+    tmp.write_text(json.dumps(new_config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, settings_path)
+    print(f"Restored → {settings_path}")
+    print("\nDone. Restart Claude Code to apply.")
+    return 0
+
+
+def _run_proxy(args: argparse.Namespace) -> int:
+    from .proxy.config import DEFAULT_CONFIG_PATH, ProxyConfig
+    from .proxy.server import ProxyServer
+
+    config_path = Path(args.config).expanduser().resolve() if args.config else DEFAULT_CONFIG_PATH
+
+    if not config_path.exists():
+        print(f"Config not found: {config_path}", file=sys.stderr)
+        print("Create one manually or run 'strip-mcp setup --mode proxy' to generate it.", file=sys.stderr)
+        return 1
+
+    try:
+        config = ProxyConfig.load(config_path)
+    except Exception as exc:
+        print(f"Failed to load config {config_path}: {exc}", file=sys.stderr)
+        return 1
+
+    if config.is_empty():
+        print("No servers configured in proxy config.", file=sys.stderr)
+        return 1
+
+    asyncio.run(ProxyServer(config).run())
+    return 0
+
+
 def _run_setup(args: argparse.Namespace) -> int:
     if platform.system() != "Darwin":
         print("strip-mcp setup currently supports macOS (Darwin) only.", file=sys.stderr)
@@ -394,9 +592,34 @@ def _run_setup(args: argparse.Namespace) -> int:
     return 1 if any(result.status == "failed" for result in apply_results) else 0
 
 
+def _add_install_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--claude-config", default=None, help=f"Override path to Claude Code settings.json (env: {_CLAUDE_CODE_ENV_VAR})")
+    p.add_argument("--proxy-config", default=None, help="Path to strip-mcp proxy config (default: ~/.strip-mcp/config.json)")
+    p.add_argument("--dry-run", action="store_true", help="Preview changes without writing")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="strip-mcp")
     sub = parser.add_subparsers(dest="subcommand")
+
+    proxy = sub.add_parser(
+        "proxy",
+        help="Run the strip-mcp proxy server (MCP server-side, reads JSON-RPC from stdin)",
+    )
+    proxy.add_argument(
+        "--config",
+        default=None,
+        help="Path to proxy config JSON (default: ~/.strip-mcp/config.json)",
+    )
+
+    _add_install_args(sub.add_parser(
+        "install",
+        help="Install strip-mcp proxy into Claude Code settings.json",
+    ))
+    _add_install_args(sub.add_parser(
+        "uninstall",
+        help="Remove strip-mcp proxy and restore original mcpServers",
+    ))
 
     setup = sub.add_parser(
         "setup",
@@ -435,6 +658,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.subcommand == "proxy":
+        return _run_proxy(args)
+
+    if args.subcommand == "install":
+        return _run_install(args)
+
+    if args.subcommand == "uninstall":
+        return _run_uninstall(args)
 
     if args.subcommand == "setup":
         return _run_setup(args)

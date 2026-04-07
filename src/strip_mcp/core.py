@@ -120,9 +120,6 @@ class StripMCP:
         for name in tool_names:
             server_id = self._registry.resolve(name)  # raises ToolNotFoundError
             handle = self._servers[server_id]
-            if not handle.staged:
-                # staged=False: schema already in tool_briefs; still return it
-                pass
             try:
                 schema = handle.get_schema(name)
             except KeyError as exc:
