@@ -12,7 +12,7 @@ Agents using many MCP servers receive full JSON schemas for every tool on `tools
 | **2 — schema** | Full `inputSchema` for specific tools, on demand | Before constructing arguments |
 | **3 — execute** | `tools/call` result | Same as raw MCP |
 
-**Measured result across 8 workflow profiles (32 tools):** staged delivery uses **~6× fewer tokens** than putting all schemas in the prompt upfront (range: 5.2×–7.5× depending on how many tools are actually invoked). See [BENCHMARKS_AND_TESTS.md](BENCHMARKS_AND_TESTS.md).
+**Measured result across 8 workflow profiles (32 tools):** staged delivery uses **~6× fewer tokens** than putting all schemas in the prompt upfront (range: 5.2×–7.5× depending on how many tools are actually invoked). See [docs/BENCHMARKS_AND_TESTS.md](docs/BENCHMARKS_AND_TESTS.md).
 
 ## Repository layout
 
@@ -21,7 +21,7 @@ Agents using many MCP servers receive full JSON schemas for every tool on `tools
 | `src/strip_mcp/` | Library, transports (`connection/`), proxy server (`proxy/`), CLI (`cli.py`), macOS setup helpers (`setup/`) |
 | `tests/` | Pytest suite |
 | `examples/` | Benchmarks and runnable scripts |
-| `docs/` | [Architecture](docs/ARCHITECTURE.md), [benchmarks/tests](BENCHMARKS_AND_TESTS.md) |
+| `docs/` | [Architecture](docs/ARCHITECTURE.md), [benchmarks/tests](docs/BENCHMARKS_AND_TESTS.md) |
 
 ## Quick start
 
@@ -92,4 +92,4 @@ Config paths can be overridden for automation:
 ## Further reading
 
 - **Architecture and design:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- **Benchmarks and tests:** [`BENCHMARKS_AND_TESTS.md`](BENCHMARKS_AND_TESTS.md)
+- **Benchmarks and tests:** [`docs/BENCHMARKS_AND_TESTS.md`](docs/BENCHMARKS_AND_TESTS.md)

@@ -311,6 +311,5 @@ It prints:
 ## Current limitations / sharp edges
 
 - **Stage 2 schema is returned as text**, not as a structured JSON object. This is intentional for MCP compatibility, but clients must parse JSON from `content[0].text` if they want to programmatically use it.
-- The proxy config supports per-server `env`, but it is **not yet passed through** to upstream subprocess creation (stored “for future use”).
+- The proxy config supports per-server `env` and `cwd`, and both are passed through to upstream subprocess creation.
 - Upstream startup failures are logged; `tools/list` may return partial lists if startup is slow or failing.
-

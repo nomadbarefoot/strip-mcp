@@ -50,6 +50,7 @@ _META_TOOL_DEF: dict[str, Any] = {
     },
 }
 _STARTUP_TIMEOUT = 15.0  # seconds to wait for upstreams before serving partial list
+_MAX_IN_FLIGHT_REQUESTS = 128
 
 
 class ProxyServer:
@@ -60,6 +61,7 @@ class ProxyServer:
         self._strip = StripMCP()
         self._startup_task: asyncio.Task[None] | None = None
         self._write_lock = asyncio.Lock()
+        self._in_flight_sem = asyncio.Semaphore(_MAX_IN_FLIGHT_REQUESTS)
         self._shutdown = False
 
     async def run(self) -> None:
@@ -68,6 +70,8 @@ class ProxyServer:
             self._strip.add_server(
                 server_id,
                 command=entry.command,
+                cwd=entry.cwd,
+                env=entry.env,
                 staged=True,
                 namespace=True,
             )
@@ -106,15 +110,14 @@ class ProxyServer:
                 if not raw:
                     continue
 
-                try:
-                    req = json.loads(raw)
-                except json.JSONDecodeError:
-                    logger.warning("Malformed JSON from client: %.200r", raw)
+                req = self._parse_request(raw)
+                if req is None:
                     continue
 
+                await self._in_flight_sem.acquire()
                 task = asyncio.create_task(self._dispatch(req))
                 in_flight.add(task)
-                task.add_done_callback(in_flight.discard)
+                task.add_done_callback(lambda t: self._on_in_flight_done(t, in_flight))
         finally:
             if in_flight:
                 await asyncio.gather(*in_flight, return_exceptions=True)
@@ -128,6 +131,12 @@ class ProxyServer:
 
         if response is not None:
             await self._write(response)
+
+    def _on_in_flight_done(
+        self, task: asyncio.Task[None], in_flight: set[asyncio.Task[None]]
+    ) -> None:
+        in_flight.discard(task)
+        self._in_flight_sem.release()
 
     async def _write(self, msg: dict[str, Any]) -> None:
         try:
@@ -192,26 +201,15 @@ class ProxyServer:
                 logger.warning("Startup error: %s", exc)
 
         briefs = await self._strip.list_tools()
-        tools: list[dict[str, Any]] = []
-
-        for brief in briefs:
-            desc = brief.description
-            if brief.requires_params:
-                desc = f"{desc} (call {_META_TOOL_NAME} to get parameters before use)"
-            tools.append({
-                "name": brief.name,
-                "description": desc,
-                "inputSchema": _STUB_SCHEMA,
-            })
-
+        tools = [self._tool_from_brief(brief) for brief in briefs]
         tools.append(_META_TOOL_DEF)
         return {"jsonrpc": "2.0", "id": rpc_id, "result": {"tools": tools}}
 
     async def _on_call_tool(self, req: dict[str, Any]) -> dict[str, Any]:
-        rpc_id = req.get("id")
-        params = req.get("params", {})
-        tool_name: str = params.get("name", "")
-        arguments: dict[str, Any] = params.get("arguments") or {}
+        parsed = self._parse_tool_call(req)
+        if isinstance(parsed, dict):
+            return parsed
+        rpc_id, tool_name, arguments = parsed
 
         if tool_name == _META_TOOL_NAME:
             return await self._handle_get_schema(rpc_id, arguments)
@@ -232,9 +230,10 @@ class ProxyServer:
     async def _handle_get_schema(
         self, rpc_id: int | None, arguments: dict[str, Any]
     ) -> dict[str, Any]:
-        tool_name = arguments.get("tool_name", "")
-        if not tool_name:
+        raw_tool_name = arguments.get("tool_name", "")
+        if not isinstance(raw_tool_name, str) or not raw_tool_name:
             return self._make_error(rpc_id, -32602, "tool_name is required")
+        tool_name = raw_tool_name
 
         try:
             schemas = await self._strip.get_schemas([tool_name])
@@ -248,6 +247,53 @@ class ProxyServer:
             )
 
     # ── helpers ────────────────────────────────────────────────────────────
+
+    def _parse_request(self, raw: bytes) -> dict[str, Any] | None:
+        try:
+            req = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Malformed JSON from client: %.200r", raw)
+            return None
+        if not isinstance(req, dict):
+            logger.warning("Ignoring non-object JSON-RPC message: %r", req)
+            return None
+        return req
+
+    def _tool_from_brief(self, brief: Any) -> dict[str, Any]:
+        description = brief.description
+        if brief.requires_params:
+            description = (
+                f"{description} (call {_META_TOOL_NAME} to get parameters before use)"
+            )
+        return {
+            "name": brief.name,
+            "description": description,
+            "inputSchema": _STUB_SCHEMA,
+        }
+
+    def _parse_tool_call(
+        self, req: dict[str, Any]
+    ) -> tuple[int | None, str, dict[str, Any]] | dict[str, Any]:
+        rpc_id = req.get("id")
+        params = req.get("params", {})
+        if not isinstance(params, dict):
+            return self._make_error(rpc_id, -32602, "tools/call params must be an object")
+
+        name = params.get("name")
+        if not isinstance(name, str) or not name:
+            return self._make_error(rpc_id, -32602, "tools/call params.name is required")
+
+        raw_arguments = params.get("arguments", {})
+        if raw_arguments is None:
+            arguments: dict[str, Any] = {}
+        elif isinstance(raw_arguments, dict):
+            arguments = raw_arguments
+        else:
+            return self._make_error(
+                rpc_id, -32602, "tools/call params.arguments must be an object"
+            )
+
+        return rpc_id, name, arguments
 
     def _make_tool_result(
         self,

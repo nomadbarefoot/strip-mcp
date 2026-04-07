@@ -1,6 +1,6 @@
 # strip-mcp — architecture and design
 
-This document describes why **strip-mcp** exists, what it does at a high level, how the pieces fit together, and where the project may go next. For how to run tests and benchmarks, see [BENCHMARKS_AND_TESTS.md](BENCHMARKS_AND_TESTS.md).
+This document describes why **strip-mcp** exists, what it does at a high level, how the pieces fit together, and where the project may go next. For how to run tests and benchmarks, see [BENCHMARKS_AND_TESTS.md](./BENCHMARKS_AND_TESTS.md).
 
 ---
 
@@ -69,24 +69,182 @@ flowchart TB
 
 ---
 
-## 3. Core concepts
+## 3. Pipeline DFD (end-to-end)
 
-### 3.1 Staged vs full discovery
+### 3.1 Data-flow view
+
+```mermaid
+flowchart LR
+    C[MCP Client / Agent]
+    P[strip-mcp Proxy]
+    S1[Upstream MCP Server A]
+    S2[Upstream MCP Server B]
+
+    C -- initialize --> P
+    C -- tools/list --> P
+    P -- initialize + tools/list --> S1
+    P -- initialize + tools/list --> S2
+    P -- tools/list with stub schemas + __strip__get_schema --> C
+
+    C -- tools/call __strip__get_schema --> P
+    P -- schema lookup from cached upstream tools/list --> C
+
+    C -- tools/call namespaced_tool --> P
+    P -- tools/call raw_tool --> S1
+    S1 -- MCP result --> P
+    P -- MCP result --> C
+```
+
+### 3.2 Pipeline steps
+
+1. Client initializes `strip-mcp` proxy with JSON-RPC `initialize`.
+2. Proxy initializes upstream servers and caches their `tools/list`.
+3. Client requests `tools/list`; proxy returns namespaced tools with stub `inputSchema` plus `__strip__get_schema`.
+4. Client requests full schema only for selected tools via `tools/call` on `__strip__get_schema`.
+5. Client executes real tool with `tools/call`; proxy routes by namespaced tool name and returns upstream result.
+
+### 3.3 Raw JSON-RPC examples: native MCP vs strip-mcp
+
+#### A) `tools/list` from a native MCP server (full schema upfront)
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {
+        "name": "browser_navigate",
+        "description": "Navigate to URL",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "url": { "type": "string", "format": "uri" }
+          },
+          "required": ["url"]
+        }
+      }
+    ]
+  }
+}
+```
+
+#### B) `tools/list` from strip-mcp proxy (brief + stub schema)
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {
+        "name": "playwright__browser_navigate",
+        "description": "Navigate to URL (call __strip__get_schema to get parameters before use)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": true
+        }
+      },
+      {
+        "name": "__strip__get_schema",
+        "description": "Returns the full parameter schema for any upstream tool.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "tool_name": { "type": "string" }
+          },
+          "required": ["tool_name"]
+        }
+      }
+    ]
+  }
+}
+```
+
+#### C) Stage 2 schema fetch via strip-mcp
+
+```json
+{
+  "jsonrpc":"2.0",
+  "id":3,
+  "method":"tools/call",
+  "params":{
+    "name":"__strip__get_schema",
+    "arguments":{"tool_name":"playwright__browser_navigate"}
+  }
+}
+```
+
+```json
+{
+  "jsonrpc":"2.0",
+  "id":3,
+  "result":{
+    "content":[
+      {
+        "type":"text",
+        "text":"{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\",\"format\":\"uri\"}},\"required\":[\"url\"]}"
+      }
+    ],
+    "isError": false
+  }
+}
+```
+
+#### D) Stage 3 tool execution via strip-mcp
+
+```json
+{
+  "jsonrpc":"2.0",
+  "id":4,
+  "method":"tools/call",
+  "params":{
+    "name":"playwright__browser_navigate",
+    "arguments":{"url":"https://example.com"}
+  }
+}
+```
+
+```json
+{
+  "jsonrpc":"2.0",
+  "id":4,
+  "result":{
+    "content":[{"type":"text","text":"..."}],
+    "isError": false
+  }
+}
+```
+
+---
+
+## 4. Core concepts
+
+### 4.1 Staged vs full discovery
 
 - **`staged=True`** (default): After `tools/list`, each tool becomes a **`ToolBrief`** with **name**, **description**, **`requires_params`**, and **no** `full_schema` (unless you attach later). Full schemas are retrieved through **`get_schemas([...])`** which reads from the handle’s cache (populated from the same `tools/list` data—no extra network round for “fetch schema” in the common case; the **separation** is about **what you expose to the model**).
 - **`staged=False`**: Stage 1 includes **`full_schema`** on each brief so the agent can behave like a full-schema client in one shot.
 
 `requires_params` is **True** when the tool’s `inputSchema` has **non-empty** `properties`; empty object schemas are treated as **no-parameter** tools for labeling.
 
-### 3.2 Namespacing
+### 4.2 Namespacing
 
 When **`namespace=True`** (default), tool names exposed to the agent are **`{server_id}__{raw_tool_name}`** (e.g. `playwright__browser_navigate`). This avoids collisions when multiple servers define the same raw name. **`namespace=False`** passes raw names through and relies on the registry to catch duplicates.
 
-### 3.3 Registry and routing
+### 4.3 Registry and routing
 
 `ToolRegistry` registers every namespaced name after **`StripMCP.start()`** loads tools. **`call(tool_name, …)`** and **`get_schemas([...])`** **resolve** the name to a **`ServerHandle`** via the registry. **`ToolNotFoundError`** includes a **Levenshtein-based** suggestion when close matches exist; **`ToolCollisionError`** is raised if registration would duplicate a name.
 
-### 3.4 Lifecycle
+### 4.4 Lifecycle
 
 1. **`add_server(...)`** — register servers (stdio command or **URL** for HTTP) **before** `start()`.
 2. **`start()`** — connect each server, run MCP **initialize**, **list tools**, fill caches, register tools.
@@ -98,7 +256,7 @@ When **`namespace=True`** (default), tool names exposed to the agent are **`{ser
 
 ---
 
-## 4. Module map (source layout)
+## 5. Module map (source layout)
 
 | Area | Role |
 |------|------|
@@ -116,7 +274,7 @@ When **`namespace=True`** (default), tool names exposed to the agent are **`{ser
 
 ---
 
-## 5. Transport layer
+## 6. Transport layer
 
 - **Stdio**: Spawns **`command`** as a subprocess, speaks **JSON-RPC** over stdin/stdout per MCP streamable HTTP–style framing used by MCP stdio, with timeouts and error translation (`ServerStartError`, `ServerCrashedError`, `ToolTimeoutError`).
 - **HTTP**: Optional remote transport (`url=`) — loaded lazily in `ServerHandle` to avoid import cycles; intended for MCP-over-HTTP deployments.
@@ -125,7 +283,7 @@ Protocol version and client metadata are set in the stdio client (see `connectio
 
 ---
 
-## 6. CLI and setup tooling (macOS)
+## 7. CLI and setup tooling (macOS)
 
 The **`strip-mcp setup`** command **discovers** MCP servers from:
 
@@ -138,7 +296,7 @@ It then **detects** supported apps (e.g. Claude, Cursor) and can **preview or ap
 
 ---
 
-## 7. Failure modes (summary)
+## 8. Failure modes (summary)
 
 - **Start failures**: bad binary, missing executable → `ServerStartError`.
 - **Process death**: `ServerCrashedError`.
@@ -149,9 +307,9 @@ It then **detects** supported apps (e.g. Claude, Cursor) and can **preview or ap
 
 ---
 
-## 8. Benchmark results
+## 9. Benchmark results
 
-Measured on 8 workflow profiles across 3 servers (playwright, wiki, memory — 32 namespaced tools). Full data: [BENCHMARKS_AND_TESTS.md](../BENCHMARKS_AND_TESTS.md).
+Measured on 8 workflow profiles across 3 servers (playwright, wiki, memory — 32 namespaced tools). Full data: [BENCHMARKS_AND_TESTS.md](./BENCHMARKS_AND_TESTS.md).
 
 | Metric | Value |
 |--------|-------|
@@ -165,7 +323,7 @@ Token counts use `len(utf8_text) // 4` — a proxy, not a vendor tokenizer. Use 
 
 ---
 
-## 9. Future direction
+## 10. Future direction
 
 | Direction | Notes |
 |-----------|--------|
@@ -176,15 +334,15 @@ Token counts use `len(utf8_text) // 4` — a proxy, not a vendor tokenizer. Use 
 
 ---
 
-## 9. Related reading
+## 11. Related reading
 
 - [README.md](../README.md) — quick start, repo layout, setup CLI usage
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — Python vs optional Node tooling
-- [BENCHMARKS_AND_TESTS.md](../BENCHMARKS_AND_TESTS.md) — benchmarks (results, scripts, methodology) and pytest suite
+- [BENCHMARKS_AND_TESTS.md](./BENCHMARKS_AND_TESTS.md) — benchmarks (results, scripts, methodology) and pytest suite
 
 ---
 
-## 10. Glossary
+## 12. Glossary
 
 | Term | Meaning |
 |------|--------|

@@ -14,7 +14,7 @@ DEFAULT_CONFIG_PATH = Path.home() / ".strip-mcp" / "config.json"
 @dataclass
 class ServerEntry:
     command: list[str]
-    # env is stored for future use; not yet passed to StdioConnection
+    cwd: str | None = None
     env: dict[str, str] | None = None
 
 
@@ -35,6 +35,7 @@ class ProxyConfig:
         for sid, entry in data.get("servers", {}).items():
             servers[sid] = ServerEntry(
                 command=entry["command"],
+                cwd=entry.get("cwd"),
                 env=entry.get("env"),
             )
 
@@ -52,6 +53,7 @@ class ProxyConfig:
             "servers": {
                 sid: {
                     "command": entry.command,
+                    **({"cwd": entry.cwd} if entry.cwd else {}),
                     **({"env": entry.env} if entry.env else {}),
                 }
                 for sid, entry in self.servers.items()

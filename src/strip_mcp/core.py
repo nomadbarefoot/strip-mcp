@@ -39,6 +39,8 @@ class StripMCP:
         *,
         command: list[str] | None = None,
         url: str | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
         staged: bool = True,
         namespace: bool = True,
         timeout: float | None = None,
@@ -54,6 +56,8 @@ class StripMCP:
             server_id,
             command=command,
             url=url,
+            cwd=cwd,
+            env=env,
             staged=staged,
             namespace=namespace,
             timeout=timeout if timeout is not None else self._default_timeout,
@@ -66,12 +70,24 @@ class StripMCP:
         """Start all servers, run handshakes, build registry."""
         if self._started:
             raise RuntimeError("Already started")
-
-        for handle in self._servers.values():
-            await handle.start()
-            self._register_server_tools(handle)
-
-        self._started = True
+        self._tools_cache = None
+        self._registry = ToolRegistry()
+        started: list[ServerHandle] = []
+        try:
+            for handle in self._servers.values():
+                await handle.start()
+                started.append(handle)
+                self._register_server_tools(handle)
+            self._started = True
+        except Exception:
+            for handle in reversed(started):
+                try:
+                    await handle.stop()
+                except Exception as exc:
+                    logger.warning("Error stopping %r after failed start: %s", handle.server_id, exc)
+            self._registry = ToolRegistry()
+            self._started = False
+            raise
 
     async def stop(self) -> None:
         for handle in self._servers.values():
@@ -79,6 +95,8 @@ class StripMCP:
                 await handle.stop()
             except Exception as exc:
                 logger.warning("Error stopping %r: %s", handle.server_id, exc)
+        self._registry = ToolRegistry()
+        self._tools_cache = None
         self._started = False
 
     # ── Stage 1 ───────────────────────────────────────────────────────────

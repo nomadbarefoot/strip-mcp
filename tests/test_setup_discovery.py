@@ -412,3 +412,78 @@ def test_setup_non_interactive_unknown_select_is_error(
     )
 
     assert rc == 2
+
+
+def test_setup_json_includes_planning_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _force_darwin(monkeypatch)
+
+    project = tmp_path / "project"
+    home = tmp_path / "home"
+    _make_local_playwright_project(project)
+
+    bad_target = home / "claude-dir"
+    bad_target.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("STRIP_MCP_CLAUDE_CONFIG", str(bad_target))
+
+    rc = cli.main(
+        [
+            "setup",
+            "--apps",
+            "claude",
+            "--non-interactive",
+            "--json",
+            "--project-root",
+            str(project),
+            "--home",
+            str(home),
+            "--global-root",
+            str(tmp_path / "global-empty"),
+        ]
+    )
+    assert rc == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "planning_errors" in payload
+    assert payload["planning_errors"]
+
+
+def test_install_ignores_existing_strip_proxy_entry(
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "settings.json"
+    proxy_path = tmp_path / "proxy.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "strip": {
+                        "command": "/usr/local/bin/strip-mcp",
+                        "args": ["proxy", "--config", str(proxy_path)],
+                    },
+                    "wiki": {
+                        "command": "node",
+                        "args": ["/tmp/wiki.js"],
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = cli.main(
+        [
+            "install",
+            "--claude-config",
+            str(settings_path),
+            "--proxy-config",
+            str(proxy_path),
+        ]
+    )
+    assert rc == 0
+
+    proxy_data = json.loads(proxy_path.read_text(encoding="utf-8"))
+    assert set(proxy_data["servers"].keys()) == {"wiki"}

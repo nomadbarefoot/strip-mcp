@@ -122,6 +122,7 @@ def _build_json_payload(
     discovered_apps: list[DiscoveredApp],
     mcps: list[DiscoveredMCP],
     plans: list[_AppPlan],
+    plan_errors: list[ApplyResult] | None = None,
     apply_results: list[ApplyResult] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
@@ -174,6 +175,16 @@ def _build_json_payload(
                 "error": r.error,
             }
             for r in apply_results
+        ]
+    if plan_errors is not None:
+        payload["planning_errors"] = [
+            {
+                "app_id": r.app_id,
+                "config_path": str(r.config_path),
+                "status": r.status,
+                "error": r.error,
+            }
+            for r in plan_errors
         ]
     return payload
 
@@ -280,6 +291,16 @@ def _claude_code_settings_path(override: str | None = None) -> Path:
     return _CLAUDE_CODE_SETTINGS
 
 
+def _is_strip_proxy_entry(server_id: str, entry: dict[str, Any]) -> bool:
+    if server_id != "strip":
+        return False
+    command = str(entry.get("command", ""))
+    args = entry.get("args", [])
+    if not isinstance(args, list):
+        return False
+    return "strip-mcp" in command and "proxy" in args
+
+
 def _run_install(args: argparse.Namespace) -> int:
     import shutil as _shutil
 
@@ -305,20 +326,30 @@ def _run_install(args: argparse.Namespace) -> int:
     # Resolve strip-mcp binary (absolute path, required since Claude Code may not share PATH)
     strip_bin = _shutil.which("strip-mcp") or str(Path(sys.executable).parent / "strip-mcp")
 
-    # Build ProxyConfig from existing mcpServers (if any)
-    if existing_mcps:
+    # Build ProxyConfig from existing non-strip-proxy mcpServers (if any)
+    filtered_mcps: dict[str, Any] = {
+        sid: entry
+        for sid, entry in existing_mcps.items()
+        if isinstance(entry, dict) and not _is_strip_proxy_entry(sid, entry)
+    }
+
+    if filtered_mcps:
         servers: dict[str, ServerEntry] = {}
-        for sid, entry in existing_mcps.items():
+        for sid, entry in filtered_mcps.items():
             if not isinstance(entry, dict):
                 continue
             cmd_str = entry.get("command", "")
             args_list = entry.get("args", [])
             command = [cmd_str, *args_list] if cmd_str else []
             if command:
-                servers[sid] = ServerEntry(command=command, env=entry.get("env"))
-        proxy_config = ProxyConfig(servers=servers, original_mcp_servers=dict(existing_mcps))
+                servers[sid] = ServerEntry(
+                    command=command,
+                    cwd=entry.get("cwd") if isinstance(entry.get("cwd"), str) else None,
+                    env=entry.get("env") if isinstance(entry.get("env"), dict) else None,
+                )
+        proxy_config = ProxyConfig(servers=servers, original_mcp_servers=dict(filtered_mcps))
     elif proxy_config_path.exists():
-        # No mcpServers in settings, but a proxy config already exists — use it
+        # No upstream mcpServers in settings, but a proxy config already exists — use it
         try:
             proxy_config = ProxyConfig.load(proxy_config_path)
         except Exception as exc:
@@ -326,7 +357,7 @@ def _run_install(args: argparse.Namespace) -> int:
             return 1
         # Preserve original_mcp_servers if already set
     else:
-        print("No mcpServers in Claude Code settings and no proxy config found.", file=sys.stderr)
+        print("No upstream mcpServers in Claude Code settings and no proxy config found.", file=sys.stderr)
         print(f"Add servers to {proxy_config_path} first, then re-run install.", file=sys.stderr)
         return 1
 
@@ -446,7 +477,7 @@ def _run_proxy(args: argparse.Namespace) -> int:
 
     if not config_path.exists():
         print(f"Config not found: {config_path}", file=sys.stderr)
-        print("Create one manually or run 'strip-mcp setup --mode proxy' to generate it.", file=sys.stderr)
+        print("Create one manually or run 'strip-mcp install --dry-run' to preview setup.", file=sys.stderr)
         return 1
 
     try:
@@ -583,6 +614,7 @@ def _run_setup(args: argparse.Namespace) -> int:
             discovered_apps=discovered_apps,
             mcps=discovered_mcps,
             plans=plans,
+            plan_errors=plan_errors,
             apply_results=apply_results,
         )
         print(json.dumps(payload, indent=2, sort_keys=True))

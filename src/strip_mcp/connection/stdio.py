@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from asyncio.subprocess import Process
 from typing import Any
 
-from ..errors import ServerCrashedError, ServerStartError, ToolTimeoutError
+from ..errors import RemoteRPCError, ServerCrashedError, ServerStartError, ToolTimeoutError
 from .base import MCPConnection
 
 logger = logging.getLogger(__name__)
@@ -23,9 +24,18 @@ _MAX_JSON_LINE_BYTES = 64 * 1024 * 1024
 class StdioConnection(MCPConnection):
     """Manages an MCP server subprocess and speaks JSON-RPC over stdio."""
 
-    def __init__(self, command: list[str], server_id: str) -> None:
+    def __init__(
+        self,
+        command: list[str],
+        server_id: str,
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> None:
         self._command = command
         self._server_id = server_id
+        self._cwd = cwd
+        self._env = env
         self._process: Process | None = None
         self._next_id = 1
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
@@ -36,12 +46,16 @@ class StdioConnection(MCPConnection):
 
     async def initialize(self) -> dict[str, Any]:
         """Spawn subprocess and run the MCP initialize handshake."""
+        self._next_id = 1
+        self._pending.clear()
         try:
             self._process = await asyncio.create_subprocess_exec(
                 *self._command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=self._cwd,
+                env=({**os.environ, **self._env} if self._env else None),
             )
         except (FileNotFoundError, PermissionError) as exc:
             raise ServerStartError(
@@ -97,10 +111,13 @@ class StdioConnection(MCPConnection):
 
     async def close(self) -> None:
         """Terminate subprocess; cancel background tasks."""
-        if self._reader_task:
-            self._reader_task.cancel()
-        if self._stderr_task:
-            self._stderr_task.cancel()
+        tasks = [t for t in (self._reader_task, self._stderr_task) if t is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._reader_task = None
+        self._stderr_task = None
 
         if self._process and self._process.returncode is None:
             try:
@@ -111,14 +128,13 @@ class StdioConnection(MCPConnection):
                     self._process.kill()
                 except ProcessLookupError:
                     pass
+                try:
+                    await asyncio.wait_for(self._process.wait(), timeout=1.0)
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    pass
 
-        # Fail all pending futures
-        for fut in self._pending.values():
-            if not fut.done():
-                fut.set_exception(ServerCrashedError(
-                    f"Server {self._server_id!r} shut down"
-                ))
-        self._pending.clear()
+        self._fail_all_pending(f"Server {self._server_id!r} shut down")
+        self._process = None
 
     # ── internal ───────────────────────────────────────────────────────────
 
@@ -138,17 +154,33 @@ class StdioConnection(MCPConnection):
         self._pending[rpc_id] = fut
 
         msg = json.dumps({"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params})
-        assert self._process and self._process.stdin
-        self._process.stdin.write((msg + "\n").encode())
-        await self._process.stdin.drain()
-
-        return await fut
+        try:
+            assert self._process and self._process.stdin
+            self._process.stdin.write((msg + "\n").encode())
+            await self._process.stdin.drain()
+            return await fut
+        except asyncio.CancelledError:
+            raise
+        except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError) as exc:
+            raise ServerCrashedError(
+                f"Server {self._server_id!r} write failed: {exc}"
+            ) from exc
+        finally:
+            pending = self._pending.pop(rpc_id, None)
+            if pending is not None and not pending.done():
+                pending.cancel()
 
     async def _notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        self._check_alive()
         msg = json.dumps({"jsonrpc": "2.0", "method": method, **({"params": params} if params else {})})
-        assert self._process and self._process.stdin
-        self._process.stdin.write((msg + "\n").encode())
-        await self._process.stdin.drain()
+        try:
+            assert self._process and self._process.stdin
+            self._process.stdin.write((msg + "\n").encode())
+            await self._process.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError) as exc:
+            raise ServerCrashedError(
+                f"Server {self._server_id!r} notify failed: {exc}"
+            ) from exc
 
     async def _read_loop(self) -> None:
         assert self._process and self._process.stdout
@@ -174,25 +206,23 @@ class StdioConnection(MCPConnection):
                     self._dispatch_json_line(raw_line)
 
             if buf:
-                tail = buf.decode().strip()
+                tail = buf.decode(errors="replace").strip()
                 if tail:
                     self._dispatch_json_line(buf)
+
+            if self._pending:
+                self._fail_all_pending(
+                    f"Server {self._server_id!r} closed stdout while requests were pending"
+                )
 
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.error("%s: read loop died: %s", self._server_id, exc)
-            for fut in self._pending.values():
-                if not fut.done():
-                    fut.set_exception(
-                        ServerCrashedError(
-                            f"Server {self._server_id!r} read loop failed: {exc}"
-                        )
-                    )
-            self._pending.clear()
+            self._fail_all_pending(f"Server {self._server_id!r} read loop failed: {exc}")
 
     def _dispatch_json_line(self, raw_line: bytes) -> None:
-        line = raw_line.decode().strip()
+        line = raw_line.decode(errors="replace").strip()
         if not line:
             return
         try:
@@ -215,7 +245,7 @@ class StdioConnection(MCPConnection):
             return
 
         if "error" in msg:
-            fut.set_exception(Exception(msg["error"]))
+            fut.set_exception(RemoteRPCError(msg["error"]))
         else:
             fut.set_result(msg.get("result", {}))
 
@@ -223,10 +253,16 @@ class StdioConnection(MCPConnection):
         assert self._process and self._process.stderr
         try:
             async for raw_line in self._process.stderr:
-                line = raw_line.decode().strip()
+                line = raw_line.decode(errors="replace").strip()
                 if line:
                     logger.debug("%s stderr: %s", self._server_id, line)
         except asyncio.CancelledError:
             pass
         except Exception as exc:
             logger.debug("%s: stderr loop error: %s", self._server_id, exc)
+
+    def _fail_all_pending(self, reason: str) -> None:
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.set_exception(ServerCrashedError(reason))
+        self._pending.clear()
