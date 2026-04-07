@@ -13,6 +13,23 @@ class ServerCrashedError(StripError):
     """Subprocess died mid-session."""
 
 
+class RemoteRPCError(StripError):
+    """JSON-RPC error returned by a remote MCP server."""
+
+    def __init__(self, error: object) -> None:
+        self.error = error
+        if isinstance(error, dict):
+            code = error.get("code")
+            message = error.get("message")
+            data = error.get("data")
+            detail = f"RPC error {code}: {message}" if code is not None else f"RPC error: {message}"
+            if data is not None:
+                detail = f"{detail} (data={data!r})"
+            super().__init__(detail)
+            return
+        super().__init__(f"RPC error: {error!r}")
+
+
 class ToolNotFoundError(StripError):
     """LLM requested a tool name that doesn't exist."""
 

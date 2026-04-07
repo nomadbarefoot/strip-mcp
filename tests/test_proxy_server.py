@@ -234,6 +234,22 @@ async def test_call_unknown_tool_returns_rpc_error() -> None:
         await conn.close()
 
 
+async def test_tools_call_invalid_params_returns_invalid_params_error() -> None:
+    """Malformed tools/call params should return deterministic -32602 errors."""
+    config = _make_proxy_config()
+    conn = await _get_conn(config)
+    try:
+        with pytest.raises(Exception) as exc:
+            await conn._rpc("tools/call", [])  # type: ignore[arg-type]
+        assert "RPC error -32602" in str(exc.value)
+
+        with pytest.raises(Exception) as exc:
+            await conn._rpc("tools/call", {"name": "mock__tool_1", "arguments": "bad"})  # type: ignore[arg-type]
+        assert "RPC error -32602" in str(exc.value)
+    finally:
+        await conn.close()
+
+
 # ── concurrency ───────────────────────────────────────────────────────────────
 
 async def test_concurrent_tool_calls_complete() -> None:
@@ -250,6 +266,25 @@ async def test_concurrent_tool_calls_complete() -> None:
         assert len(results) == len(targets)
         for r in results:
             assert r["content"]
+    finally:
+        await conn.close()
+
+
+async def test_high_concurrency_burst_remains_usable() -> None:
+    """A larger burst should complete and leave the session usable."""
+    config = _make_proxy_config(["--tools", "5"])
+    conn = await _get_conn(config)
+    try:
+        tools = await conn.list_tools()
+        target = next(t["name"] for t in tools if t["name"] != "__strip__get_schema")
+        results = await asyncio.gather(
+            *[conn.call_tool(target, {}, timeout=_TIMEOUT) for _ in range(100)]
+        )
+        assert len(results) == 100
+        assert all(r["content"] for r in results)
+
+        follow_up = await conn.call_tool(target, {}, timeout=_TIMEOUT)
+        assert follow_up["content"]
     finally:
         await conn.close()
 

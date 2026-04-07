@@ -32,6 +32,8 @@ class ServerHandle:
         *,
         command: list[str] | None = None,
         url: str | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
         staged: bool = True,
         namespace: bool = True,
         timeout: float = 30.0,
@@ -49,7 +51,12 @@ class ServerHandle:
         self._overrides: dict[str, str] = description_overrides or {}
 
         if command is not None:
-            self._conn: MCPConnection = StdioConnection(command, server_id)
+            self._conn: MCPConnection = StdioConnection(
+                command,
+                server_id,
+                cwd=cwd,
+                env=env,
+            )
         else:
             # Phase 2: HTTP
             from .connection.http import HTTPConnection  # noqa: PLC0415
@@ -58,6 +65,7 @@ class ServerHandle:
         # populated after start()
         self._schema_cache: dict[str, dict[str, Any]] = {}  # raw_name → inputSchema
         self._raw_tools: list[dict[str, Any]] = []
+        self._brief_cache: list[ToolBrief] | None = None
         self._healthy = False
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -77,6 +85,7 @@ class ServerHandle:
         """Reload tool list and schema cache from server."""
         self._schema_cache.clear()
         self._raw_tools.clear()
+        self._brief_cache = None
         await self._load_tools()
         logger.debug("Server %r refreshed", self.server_id)
 
@@ -84,22 +93,9 @@ class ServerHandle:
 
     def tool_briefs(self) -> list[ToolBrief]:
         """Return Stage 1 output for all tools on this server."""
-        briefs = []
-        for raw in self._raw_tools:
-            raw_name: str = raw["name"]
-            namespaced = self._namespaced(raw_name)
-            description = self._overrides.get(raw_name, raw.get("description", ""))
-            input_schema = raw.get("inputSchema", {})
-
-            brief = ToolBrief(
-                name=namespaced,
-                description=description,
-                server_id=self.server_id,
-                requires_params=_requires_params(input_schema),
-                full_schema=None if self.staged else input_schema,
-            )
-            briefs.append(brief)
-        return briefs
+        if self._brief_cache is None:
+            self._brief_cache = [self._build_brief(raw) for raw in self._raw_tools]
+        return self._brief_cache
 
     def get_schema(self, namespaced_name: str) -> dict[str, Any]:
         """Return full inputSchema for a namespaced tool name."""
@@ -149,3 +145,17 @@ class ServerHandle:
         self._schema_cache = {
             t["name"]: t.get("inputSchema", {}) for t in raw_tools
         }
+        self._brief_cache = None
+
+    def _build_brief(self, raw: dict[str, Any]) -> ToolBrief:
+        raw_name: str = raw["name"]
+        namespaced = self._namespaced(raw_name)
+        description = self._overrides.get(raw_name, raw.get("description", ""))
+        input_schema = raw.get("inputSchema", {})
+        return ToolBrief(
+            name=namespaced,
+            description=description,
+            server_id=self.server_id,
+            requires_params=_requires_params(input_schema),
+            full_schema=None if self.staged else input_schema,
+        )

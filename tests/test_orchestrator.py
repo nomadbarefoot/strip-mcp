@@ -261,3 +261,29 @@ async def test_list_tools_text() -> None:
         assert "s1__tool_0" in text
         assert "[no params]" in text
         assert "[params required]" in text
+
+
+@pytest.mark.asyncio
+async def test_restart_after_stop_works() -> None:
+    mcp = StripMCP()
+    mcp.add_server("s1", command=MOCK_5)
+
+    await mcp.start()
+    await mcp.stop()
+    await mcp.start()
+
+    tools = await mcp.list_tools()
+    assert len(tools) == 5
+    await mcp.stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_start_rolls_back_running_servers() -> None:
+    mcp = StripMCP()
+    mcp.add_server("ok", command=MOCK_5)
+    mcp.add_server("bad", command=["nonexistent_binary_xyz"])
+
+    with pytest.raises(ServerStartError):
+        await mcp.start()
+
+    assert mcp._servers["ok"].healthy is False

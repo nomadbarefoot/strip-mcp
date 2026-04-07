@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
 import pytest
 
 from strip_mcp.connection.stdio import StdioConnection
-from strip_mcp.errors import ServerStartError, ToolExecutionError, ToolTimeoutError
+from strip_mcp.errors import (
+    RemoteRPCError,
+    ServerCrashedError,
+    ServerStartError,
+    ToolExecutionError,
+    ToolTimeoutError,
+)
 from strip_mcp.server import ServerHandle, _requires_params
 
 MOCK = [sys.executable, str(Path(__file__).parent / "mock_mcp_server.py")]
@@ -78,6 +85,66 @@ async def test_tool_timeout() -> None:
             await conn.call_tool("tool_1", {}, timeout=0.1)
     finally:
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_rpc_errors_use_typed_exception() -> None:
+    conn = StdioConnection(MOCK, "mock")
+    try:
+        await conn.initialize()
+        with pytest.raises(RemoteRPCError):
+            await conn._rpc("method/does-not-exist", {})  # noqa: SLF001
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_send_failure_cleans_pending_requests() -> None:
+    conn = StdioConnection(MOCK, "mock")
+    try:
+        await conn.initialize()
+        assert conn._pending == {}  # noqa: SLF001
+        assert conn._process and conn._process.stdin  # noqa: SLF001
+
+        conn._process.stdin.close()  # noqa: SLF001
+        wait_closed = getattr(conn._process.stdin, "wait_closed", None)  # noqa: SLF001
+        if callable(wait_closed):
+            await wait_closed()
+
+        with pytest.raises(ServerCrashedError):
+            await conn.list_tools()
+        assert conn._pending == {}  # noqa: SLF001
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_rpc_cancellation_cleans_pending_requests() -> None:
+    conn = StdioConnection(MOCK + ["--latency", "0.5"], "mock-slow")
+    try:
+        await conn.initialize()
+        task = asyncio.create_task(conn._rpc("tools/list", {}))  # noqa: SLF001
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert conn._pending == {}  # noqa: SLF001
+    finally:
+        await conn.close()
+
+
+def test_dispatch_json_line_handles_non_utf8_bytes() -> None:
+    conn = StdioConnection(MOCK, "mock")
+    conn._dispatch_json_line(b"\xff\xfe\xfd\n")  # noqa: SLF001
+    conn._dispatch_json_line(b"not-json-\xff\n")  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_close_is_idempotent() -> None:
+    conn = StdioConnection(MOCK, "mock")
+    await conn.initialize()
+    await conn.close()
+    await conn.close()
 
 
 # ── ServerHandle ──────────────────────────────────────────────────────────────
@@ -170,5 +237,21 @@ async def test_server_refresh() -> None:
         await handle.refresh()
         refreshed = handle.tool_briefs()
         assert [b.name for b in original] == [b.name for b in refreshed]
+    finally:
+        await handle.stop()
+
+
+@pytest.mark.asyncio
+async def test_tool_briefs_are_cached_until_refresh() -> None:
+    handle = ServerHandle("mock", command=MOCK)
+    try:
+        await handle.start()
+        first = handle.tool_briefs()
+        second = handle.tool_briefs()
+        assert first is second
+
+        await handle.refresh()
+        third = handle.tool_briefs()
+        assert third is not second
     finally:
         await handle.stop()

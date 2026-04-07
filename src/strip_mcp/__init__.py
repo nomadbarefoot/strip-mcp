@@ -7,6 +7,7 @@ from .node_discovery import (
     discover_node_mcp_servers,
 )
 from .errors import (
+    RemoteRPCError,
     SchemaFetchError,
     ServerCrashedError,
     ServerStartError,
@@ -29,6 +30,7 @@ __all__ = [
     "StripError",
     "ServerStartError",
     "ServerCrashedError",
+    "RemoteRPCError",
     "ToolNotFoundError",
     "ToolCollisionError",
     "ToolExecutionError",
