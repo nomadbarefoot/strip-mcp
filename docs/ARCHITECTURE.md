@@ -110,10 +110,9 @@ When **`namespace=True`** (default), tool names exposed to the agent are **`{ser
 | `connection/` | **`MCPConnection`** ABC, **`stdio`**, **`http`** |
 | `sync.py` | **`SyncStripMCP`** blocking facade |
 | `node_discovery.py` | Map **`package.json`** deps + **`node_modules`** to known npm MCP entrypoints; **`DEFAULT_NODE_MCP_REGISTRY`** |
+| `proxy/` | **Proxy MCP server** — wraps upstream servers, exposes stub schemas at Stage 1 + `__strip__get_schema` tool |
 | `setup/` | macOS **CLI** to discover local/global Node MCPs and **preview/apply** Claude/Cursor MCP config |
-| `cli.py` | **`strip-mcp`** entrypoint (`setup` subcommand, etc.) |
-
-**`adapters/`** exists for host-specific integration hooks as the setup path evolves.
+| `cli.py` | **`strip-mcp`** entrypoint (`setup`, `proxy` subcommands) |
 
 ---
 
@@ -150,25 +149,38 @@ It then **detects** supported apps (e.g. Claude, Cursor) and can **preview or ap
 
 ---
 
-## 8. Future direction and roadmap
+## 8. Benchmark results
 
-These items are **directional**; not all are committed or scheduled.
+Measured on 8 workflow profiles across 3 servers (playwright, wiki, memory — 32 namespaced tools). Full data: [BENCHMARKS_AND_TESTS.md](../BENCHMARKS_AND_TESTS.md).
+
+| Metric | Value |
+|--------|-------|
+| Naive full-registry prompt (~tokens) | ~6,343 |
+| Strip staged workflow (~tokens) | ~861 |
+| **Mean token reduction** | **6.4× fewer** (range: 5.2×–7.5×) |
+| Schema fetch overhead | ~0 ms (in-process cache) |
+| Startup overhead vs full | ~12 ms mean |
+
+Token counts use `len(utf8_text) // 4` — a proxy, not a vendor tokenizer. Use for ratios and deltas.
+
+---
+
+## 9. Future direction
 
 | Direction | Notes |
 |-----------|--------|
-| **Proxy mode** | CLI documents `--mode proxy` as reserved: a future mode could run strip-mcp as an MCP **proxy** in front of backends instead of only editing app configs. |
+| **Proxy mode** | Implemented: `strip-mcp proxy --config` runs strip-mcp as an MCP proxy in front of upstream servers (see `src/strip_mcp/proxy/`). `--mode proxy` in the setup CLI remains reserved. |
 | **HTTP transport** | `url=` path exists; maturity and parity with stdio (reconnect, auth) may grow over time. |
-| **Discovery** | Expand **`DEFAULT_NODE_MCP_REGISTRY`** or pluggable registries as the npm MCP ecosystem grows; keep **setup** and **runtime** discovery aligned. |
-| **Benchmarks** | Continue to measure **token / latency** tradeoffs for staged vs full-schema in `examples/` (see [BENCHMARKS_AND_TESTS.md](BENCHMARKS_AND_TESTS.md)). |
+| **Discovery** | Expand **`DEFAULT_NODE_MCP_REGISTRY`** or pluggable registries as the npm MCP ecosystem grows. |
 | **Docs** | This file is the **canonical** architecture overview; older design filenames may appear in git history. |
 
 ---
 
 ## 9. Related reading
 
-- [README.md](../README.md) — quick start, repo layout, setup CLI usage  
-- [CONTRIBUTING.md](../CONTRIBUTING.md) — Python vs optional Node tooling  
-- [BENCHMARKS_AND_TESTS.md](BENCHMARKS_AND_TESTS.md) — tests and benchmark scripts  
+- [README.md](../README.md) — quick start, repo layout, setup CLI usage
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — Python vs optional Node tooling
+- [BENCHMARKS_AND_TESTS.md](../BENCHMARKS_AND_TESTS.md) — benchmarks (results, scripts, methodology) and pytest suite
 
 ---
 
