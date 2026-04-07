@@ -16,10 +16,12 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import statistics
 import sys
 import time
-from dataclasses import asdict, dataclass, field
+from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -27,9 +29,65 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from strip_mcp import StripMCP
 from strip_mcp.errors import StripError
-from strip_mcp.node_discovery import discover_node_mcp_servers
+from strip_mcp.node_discovery import DiscoveredNodeServer, discover_node_mcp_servers
 
 ROOT = Path(__file__).resolve().parent.parent
+
+WORKFLOW_INTERPRETATION: dict[str, str] = {
+    "tokenizer": (
+        "Token counts use approx_tokens = max(1, len(utf8_text)//4). This is a rough byte/char proxy, "
+        "not a real BPE/tokenizer count; use for ratios and deltas, not billing."
+    ),
+    "naive_full_registry": (
+        "Real-world analogue: the client puts every tool's name, description, and full inputSchema JSON "
+        "in the system prompt (or first-turn tool payload) before the model plans any call. "
+        "Benchmark proxy: all_tools_full_schemas_json_approx_tokens (pretty-printed JSON of all tools)."
+    ),
+    "strip_staged_workflow": (
+        "Real-world analogue: Stage 1 exposes a compact catalog (list_tools_text: names, descriptions, "
+        "param hints). Each tool's inputSchema is materialized only when the agent needs to call it. "
+        "Benchmark proxy: stage1_list_tools_text_approx_tokens plus JSON Schema once per distinct tool "
+        "name executed in the scenario (workflow_catalog_plus_unique_schemas_approx_tokens)."
+    ),
+    "schema_refetch_penalty": (
+        "If the client re-attaches full inputSchema on every tool invocation instead of caching per tool, "
+        "token cost moves toward workflow_catalog_plus_schema_on_every_tool_call_approx_tokens. "
+        "The delta vs the unique-schema workflow is reported as approx_extra_tokens_schema_every_call_vs_unique_cached."
+    ),
+    "latency_note": (
+        "Scenario wall times are dominated by Wikipedia and browser I/O. Latency is not a clean proxy for "
+        "staging overhead; prefer token proxies for comparing catalog delivery strategies."
+    ),
+    "playwright_headless": (
+        "Playwright MCP is launched with --headless --isolated (and PLAYWRIGHT_MCP_HEADLESS=1) so Chromium "
+        "runs in the background with an in-memory profile—no visible browser window and no persistent MCP profile."
+    ),
+    "silent_stdio": (
+        "Unless you pass -v/--verbose, this process redirects Python stdout/stderr to os.devnull during the "
+        "benchmark so library chatter does not interrupt your terminal; MCP subprocess stderr stays DEBUG-only "
+        "in strip_mcp loggers (raised to CRITICAL for the run)."
+    ),
+    "workflow_profiles": (
+        "Each iteration uses a named workflow_profile (low_tool_flash, wiki_heavy, browser_heavy, memory_heavy, "
+        "balanced, wiki_short_browser_micro, full_stack_complex, mixed_stress) cycling in order—different site "
+        "URLs, Wikipedia depth, memory graph complexity, and tool-call counts to approximate high vs low usage."
+    ),
+}
+
+
+def _with_headless_playwright(servers: list[DiscoveredNodeServer]) -> list[DiscoveredNodeServer]:
+    """No headed browser: --headless --isolated on Playwright MCP only."""
+    out: list[DiscoveredNodeServer] = []
+    for d in servers:
+        if d.server_id == "playwright":
+            cmd = list(d.command)
+            for flag in ("--headless", "--isolated"):
+                if flag not in cmd:
+                    cmd.append(flag)
+            out.append(replace(d, command=cmd))
+        else:
+            out.append(d)
+    return out
 
 
 def approx_tokens(text: str) -> int:
@@ -72,6 +130,9 @@ class ModeReport:
     full_vs_stage1_ratio: float
     agent_used_schemas_only_approx_tokens: int
     full_vs_agent_used_ratio: float
+    unique_tool_schemas_approx_tokens: int
+    workflow_catalog_plus_unique_schemas_approx_tokens: int
+    workflow_catalog_plus_schema_on_every_tool_call_approx_tokens: int
     tasks: list[TaskRecord]
     failure_summary: list[str]
     token_note: str = "approx_tokens = len(text)//4; not a real tokenizer"
@@ -111,89 +172,328 @@ def _wiki_titles() -> list[str]:
     ]
 
 
-def _urls() -> list[tuple[str, str]]:
-    """Pairs: (label, url) for browser flows."""
-    return [
-        ("example.com", "https://example.com"),
-        ("example.org", "https://example.org"),
-        ("iana.org", "https://www.iana.org/help/example-domains"),
-        ("httpbin", "https://httpbin.org/get"),
-        ("jsonplaceholder", "https://jsonplaceholder.typicode.com/"),
-    ]
+# Public-ish sites only; rotated per iteration / profile.
+_BENCHMARK_URLS: list[str] = [
+    "https://example.com",
+    "https://example.org",
+    "https://www.iana.org/help/example-domains",
+    "https://httpbin.org/get",
+    "https://jsonplaceholder.typicode.com/",
+    "https://www.w3.org/",
+    "https://developer.mozilla.org/en-US/",
+    "https://github.com",
+    "https://registry.npmjs.org/",
+    "https://playwright.dev/",
+]
+
+WORKFLOW_PROFILES: tuple[str, ...] = (
+    "low_tool_flash",
+    "wiki_heavy",
+    "browser_heavy",
+    "memory_heavy",
+    "balanced",
+    "wiki_short_browser_micro",
+    "full_stack_complex",
+    "mixed_stress",
+)
 
 
-def build_scenarios(iteration_index: int) -> list[ScenarioTask]:
-    """Varied tasks + edge cases; deterministic per iteration."""
+def _browser_hops(urls: list[str]) -> list[tuple[str, dict[str, Any] | None]]:
+    steps: list[tuple[str, dict[str, Any] | None]] = []
+    for u in urls:
+        steps.append(("playwright__browser_navigate", {"url": u}))
+        steps.append(("playwright__browser_snapshot", {}))
+    return steps
+
+
+def _edge_unknown() -> ScenarioTask:
+    return ScenarioTask(
+        "edge_unknown_tool",
+        "Edge: namespaced tool that does not exist (expect ToolNotFound)",
+        [("wiki__strip_benchmark_nonexistent_tool_xyz", {})],
+        expect_failure=True,
+    )
+
+
+def _edge_empty() -> ScenarioTask:
+    return ScenarioTask(
+        "edge_empty_search",
+        "Edge: Wikipedia search with empty query string",
+        [("wiki__search", {"query": ""})],
+    )
+
+
+def _edge_double_read() -> ScenarioTask:
+    return ScenarioTask(
+        "edge_idempotent_graph",
+        "Edge: read_graph twice in a row (idempotent)",
+        [
+            ("memory__read_graph", {}),
+            ("memory__read_graph", {}),
+        ],
+    )
+
+
+def build_scenarios(iteration_index: int) -> tuple[list[ScenarioTask], str]:
+    """Varied workflow profiles: tool volume, sites, Wikipedia depth, memory complexity."""
     i = iteration_index
-    q = _wiki_queries()[i % len(_wiki_queries())]
-    title = _wiki_titles()[i % len(_wiki_titles())]
-    url_a, url_b = _urls()[i % len(_urls())][1], _urls()[(i + 1) % len(_urls())][1]
-    tag = f"bench-i{i}-u{iteration_index}"
+    profile = WORKFLOW_PROFILES[(i - 1) % len(WORKFLOW_PROFILES)]
+    tag = f"bench-i{i}"
+    wq = _wiki_queries()
+    wt = _wiki_titles()
+    qi, ti = i % len(wq), i % len(wt)
+    q0, q1, q2 = wq[qi], wq[(qi + 4) % len(wq)], wq[(qi + 9) % len(wq)]
+    t0, t1 = wt[ti], wt[(ti + 5) % len(wt)]
+    rot = [(i + k) % len(_BENCHMARK_URLS) for k in range(len(_BENCHMARK_URLS))]
+    u = [_BENCHMARK_URLS[k] for k in rot]
 
-    return [
-        ScenarioTask(
-            f"t1_search_{i}",
-            f"Wikipedia search (varied query): {q[:40]}…",
-            [("wiki__search", {"query": q})],
-        ),
-        ScenarioTask(
-            f"t2_article_{i}",
-            f"Wikipedia readArticle (varied title): {title}",
-            [("wiki__readArticle", {"title": title})],
-        ),
-        ScenarioTask(
-            f"t3_memory_unicode_{i}",
-            "Memory graph: unicode entity + recall",
-            [
-                (
-                    "memory__create_entities",
-                    {
-                        "entities": [
-                            {
-                                "name": f"測試-{tag}-α",
-                                "entityType": "benchmark",
-                                "observations": [
-                                    f"iteration={iteration_index}",
-                                    "obs: café naïve résumé",
-                                ],
-                            }
-                        ]
-                    },
-                ),
-                ("memory__search_nodes", {"query": "測試"}),
-                ("memory__read_graph", {}),
-            ],
-        ),
-        ScenarioTask(
-            f"t4_browser_chain_{i}",
-            "Playwright: navigate A → snapshot → navigate B → snapshot",
-            [
-                ("playwright__browser_navigate", {"url": url_a}),
-                ("playwright__browser_snapshot", {}),
-                ("playwright__browser_navigate", {"url": url_b}),
-                ("playwright__browser_snapshot", {}),
-            ],
-        ),
-        ScenarioTask(
-            "edge_unknown_tool",
-            "Edge: namespaced tool that does not exist (expect ToolNotFound)",
-            [("wiki__strip_benchmark_nonexistent_tool_xyz", {})],
-            expect_failure=True,
-        ),
-        ScenarioTask(
-            "edge_empty_search",
-            "Edge: Wikipedia search with empty query string",
-            [("wiki__search", {"query": ""})],
-        ),
-        ScenarioTask(
-            "edge_idempotent_graph",
-            "Edge: read_graph twice in a row (idempotent)",
-            [
-                ("memory__read_graph", {}),
-                ("memory__read_graph", {}),
-            ],
-        ),
-    ]
+    ea = f"BenchA-{tag}"
+    eb = f"BenchB-{tag}"
+
+    if profile == "low_tool_flash":
+        tasks = [
+            ScenarioTask(
+                "low_mem_read",
+                "Low usage: memory read_graph only",
+                [("memory__read_graph", {})],
+            ),
+            ScenarioTask(
+                "low_browser_one_page",
+                "Low usage: one navigate + snapshot",
+                _browser_hops([u[0]]),
+            ),
+            _edge_unknown(),
+        ]
+    elif profile == "wiki_heavy":
+        tasks = [
+            ScenarioTask(f"wh_s0_{i}", "Wiki-heavy: search A", [("wiki__search", {"query": q0})]),
+            ScenarioTask(f"wh_s1_{i}", "Wiki-heavy: search B", [("wiki__search", {"query": q1})]),
+            ScenarioTask(f"wh_s2_{i}", "Wiki-heavy: search C", [("wiki__search", {"query": q2})]),
+            ScenarioTask(f"wh_a0_{i}", "Wiki-heavy: article A", [("wiki__readArticle", {"title": t0})]),
+            ScenarioTask(f"wh_a1_{i}", "Wiki-heavy: article B", [("wiki__readArticle", {"title": t1})]),
+            _edge_empty(),
+        ]
+    elif profile == "browser_heavy":
+        hops = u[0:6]
+        tasks = [
+            ScenarioTask(
+                f"bh_chain_{i}",
+                f"Browser-heavy: {len(hops)} sites × (navigate + snapshot)",
+                _browser_hops(hops),
+            ),
+            _edge_double_read(),
+        ]
+    elif profile == "memory_heavy":
+        tasks = [
+            ScenarioTask(
+                f"mh_create_{i}",
+                "Memory-heavy: entities, relation, observations, search, read",
+                [
+                    (
+                        "memory__create_entities",
+                        {
+                            "entities": [
+                                {
+                                    "name": ea,
+                                    "entityType": "benchmark",
+                                    "observations": [f"iter={i}", "node A"],
+                                },
+                                {
+                                    "name": eb,
+                                    "entityType": "benchmark",
+                                    "observations": [f"iter={i}", "node B"],
+                                },
+                            ]
+                        },
+                    ),
+                    (
+                        "memory__create_relations",
+                        {
+                            "relations": [
+                                {
+                                    "from": ea,
+                                    "to": eb,
+                                    "relationType": "benchmark_linked_to",
+                                }
+                            ]
+                        },
+                    ),
+                    (
+                        "memory__add_observations",
+                        {
+                            "observations": [
+                                {
+                                    "entityName": ea,
+                                    "contents": [f"obs-extra-{i}", "post-relation note"],
+                                }
+                            ]
+                        },
+                    ),
+                    ("memory__search_nodes", {"query": "Bench"}),
+                    ("memory__read_graph", {}),
+                ],
+            ),
+            _edge_unknown(),
+        ]
+    elif profile == "balanced":
+        url_a, url_b = u[1], u[3]
+        tasks = [
+            ScenarioTask(
+                f"bal_s_{i}",
+                f"Balanced: Wikipedia search: {q0[:32]}…",
+                [("wiki__search", {"query": q0})],
+            ),
+            ScenarioTask(
+                f"bal_a_{i}",
+                f"Balanced: article {t0}",
+                [("wiki__readArticle", {"title": t0})],
+            ),
+            ScenarioTask(
+                f"bal_mem_{i}",
+                "Balanced: unicode memory + recall",
+                [
+                    (
+                        "memory__create_entities",
+                        {
+                            "entities": [
+                                {
+                                    "name": f"測試-{tag}-α",
+                                    "entityType": "benchmark",
+                                    "observations": [
+                                        f"iteration={iteration_index}",
+                                        "obs: café naïve résumé",
+                                    ],
+                                }
+                            ]
+                        },
+                    ),
+                    ("memory__search_nodes", {"query": "測試"}),
+                    ("memory__read_graph", {}),
+                ],
+            ),
+            ScenarioTask(
+                f"bal_br_{i}",
+                "Balanced: browser two sites",
+                _browser_hops([url_a, url_b]),
+            ),
+            _edge_unknown(),
+            _edge_empty(),
+            _edge_double_read(),
+        ]
+    elif profile == "wiki_short_browser_micro":
+        tasks = [
+            ScenarioTask(
+                f"wsm_s_{i}",
+                "Short: single Wikipedia search",
+                [("wiki__search", {"query": q1})],
+            ),
+            ScenarioTask(
+                f"wsm_br_{i}",
+                "Short: two quick browser hops",
+                _browser_hops([u[2], u[5]]),
+            ),
+            _edge_double_read(),
+        ]
+    elif profile == "full_stack_complex":
+        tasks = [
+            ScenarioTask(
+                f"fsc_s_{i}", "Complex: search", [("wiki__search", {"query": q2})]
+            ),
+            ScenarioTask(
+                f"fsc_a_{i}",
+                "Complex: article",
+                [("wiki__readArticle", {"title": t1})],
+            ),
+            ScenarioTask(
+                f"fsc_mem_{i}",
+                "Complex: memory graph",
+                [
+                    (
+                        "memory__create_entities",
+                        {
+                            "entities": [
+                                {
+                                    "name": f"Cx-{tag}",
+                                    "entityType": "task",
+                                    "observations": ["full stack run", "unicode: öæß"],
+                                }
+                            ]
+                        },
+                    ),
+                    ("memory__search_nodes", {"query": "Cx-"}),
+                    ("memory__read_graph", {}),
+                ],
+            ),
+            ScenarioTask(
+                f"fsc_br_{i}",
+                "Complex: four browser hops",
+                _browser_hops(u[0:4]),
+            ),
+            _edge_unknown(),
+            _edge_empty(),
+        ]
+    elif profile == "mixed_stress":
+        mx1, mx2 = f"Mx1-{tag}", f"Mx2-{tag}"
+        tasks = [
+            ScenarioTask(
+                f"ms_s1_{i}", "Mixed: search 1", [("wiki__search", {"query": q0})]
+            ),
+            ScenarioTask(
+                f"ms_s2_{i}", "Mixed: search 2", [("wiki__search", {"query": q2})]
+            ),
+            ScenarioTask(
+                f"ms_a_{i}",
+                "Mixed: article",
+                [("wiki__readArticle", {"title": t0})],
+            ),
+            ScenarioTask(
+                f"ms_mem_{i}",
+                "Mixed: entities + relation + read",
+                [
+                    (
+                        "memory__create_entities",
+                        {
+                            "entities": [
+                                {
+                                    "name": mx1,
+                                    "entityType": "stress",
+                                    "observations": ["mixed"],
+                                },
+                                {
+                                    "name": mx2,
+                                    "entityType": "stress",
+                                    "observations": ["mixed"],
+                                },
+                            ]
+                        },
+                    ),
+                    (
+                        "memory__create_relations",
+                        {
+                            "relations": [
+                                {
+                                    "from": mx1,
+                                    "to": mx2,
+                                    "relationType": "paired_with",
+                                }
+                            ]
+                        },
+                    ),
+                    ("memory__read_graph", {}),
+                ],
+            ),
+            ScenarioTask(
+                f"ms_br_{i}",
+                "Mixed: three browser hops",
+                _browser_hops([u[6], u[7], u[8]]),
+            ),
+            _edge_unknown(),
+            _edge_empty(),
+        ]
+    else:
+        tasks = []
+
+    return tasks, profile
 
 
 async def build_full_schemas_json(mcp: StripMCP, tools: list) -> str:
@@ -257,10 +557,12 @@ def _record_task_error(
 async def _run_scenario_tasks(
     mcp: StripMCP,
     scenarios: list[ScenarioTask],
-) -> tuple[list[TaskRecord], list[str], int]:
+) -> tuple[list[TaskRecord], list[str], int, int]:
     tasks_out: list[TaskRecord] = []
     failure_summary: list[str] = []
     agent_schema_chars = 0
+    unique_schema_chars = 0
+    seen_tool_names: set[str] = set()
 
     for sc in scenarios:
         tr = TaskRecord(
@@ -273,6 +575,9 @@ async def _run_scenario_tasks(
             for tool_name, args in sc.steps:
                 step, sch_chars = await _run_one_step(mcp, tool_name, args)
                 agent_schema_chars += sch_chars
+                if tool_name not in seen_tool_names:
+                    seen_tool_names.add(tool_name)
+                    unique_schema_chars += sch_chars
                 tr.steps.append(step)
         except StripError as e:
             _record_task_error(tr, sc, e, failure_summary)
@@ -283,7 +588,7 @@ async def _run_scenario_tasks(
         tr.outcome_passed = (not tr.ok) if sc.expect_failure else tr.ok
         tasks_out.append(tr)
 
-    return tasks_out, failure_summary, agent_schema_chars
+    return tasks_out, failure_summary, agent_schema_chars, unique_schema_chars
 
 
 async def run_one_mode(
@@ -313,11 +618,14 @@ async def run_one_mode(
         full_tok = approx_tokens(full_json)
         full_build_ms = (time.perf_counter() - t2) * 1000
 
-        tasks_out, failure_summary, agent_schema_chars = await _run_scenario_tasks(
-            mcp, scenarios
+        tasks_out, failure_summary, agent_schema_chars, unique_schema_chars = (
+            await _run_scenario_tasks(mcp, scenarios)
         )
 
-        agent_tok = max(1, agent_schema_chars // 4)
+        agent_tok = agent_schema_chars // 4
+        unique_tok = unique_schema_chars // 4
+        workflow_cat_unique = stage1_tok + unique_tok
+        workflow_cat_every_call = stage1_tok + agent_tok
         server_ids = [d.server_id for d in discovered]
 
         return ModeReport(
@@ -332,7 +640,14 @@ async def run_one_mode(
             all_tools_full_schemas_json_approx_tokens=full_tok,
             full_vs_stage1_ratio=round(full_tok / stage1_tok, 2) if stage1_tok else 0.0,
             agent_used_schemas_only_approx_tokens=agent_tok,
-            full_vs_agent_used_ratio=round(full_tok / agent_tok, 2) if agent_tok else 0.0,
+            full_vs_agent_used_ratio=(
+                round(full_tok / max(1, agent_tok), 2) if agent_tok else 0.0
+            ),
+            unique_tool_schemas_approx_tokens=unique_tok,
+            workflow_catalog_plus_unique_schemas_approx_tokens=workflow_cat_unique,
+            workflow_catalog_plus_schema_on_every_tool_call_approx_tokens=(
+                workflow_cat_every_call
+            ),
             tasks=tasks_out,
             failure_summary=failure_summary,
         )
@@ -365,16 +680,35 @@ async def run_single_iteration(
     discovered: list,
     iteration_index: int,
 ) -> dict[str, Any]:
-    scenarios = build_scenarios(iteration_index)
+    scenarios, workflow_profile = build_scenarios(iteration_index)
+    planned_calls = sum(len(s.steps) for s in scenarios)
 
     strip_r = await run_one_mode(True, discovered, scenarios)
     full_r = await run_one_mode(False, discovered, scenarios)
 
+    upfront = strip_r.all_tools_full_schemas_json_approx_tokens
+    strip_wf = strip_r.workflow_catalog_plus_unique_schemas_approx_tokens
     comparison = {
         "strip_stage1_tokens": strip_r.stage1_list_tools_text_approx_tokens,
         "full_stage1_tokens": full_r.stage1_list_tools_text_approx_tokens,
         "strip_all_tools_json_tokens": strip_r.all_tools_full_schemas_json_approx_tokens,
         "full_all_tools_json_tokens": full_r.all_tools_full_schemas_json_approx_tokens,
+        "naive_full_registry_prompt_approx_tokens": upfront,
+        "strip_staged_workflow_prompt_approx_tokens": strip_wf,
+        "approx_tokens_saved_strip_vs_naive_upfront": upfront - strip_wf,
+        "approx_ratio_naive_upfront_to_strip_workflow": (
+            round(upfront / strip_wf, 2) if strip_wf else 0.0
+        ),
+        "strip_unique_executed_tool_schemas_approx_tokens": (
+            strip_r.unique_tool_schemas_approx_tokens
+        ),
+        "approx_extra_tokens_schema_every_call_vs_unique_cached": (
+            strip_r.workflow_catalog_plus_schema_on_every_tool_call_approx_tokens
+            - strip_wf
+        ),
+        "full_mode_catalog_plus_unique_approx_tokens": (
+            full_r.workflow_catalog_plus_unique_schemas_approx_tokens
+        ),
         "strip_startup_ms": strip_r.startup_ms,
         "full_startup_ms": full_r.startup_ms,
         "strip_sum_task_ms": round(total_task_ms(strip_r), 2),
@@ -399,6 +733,8 @@ async def run_single_iteration(
 
     return {
         "iteration": iteration_index,
+        "workflow_profile": workflow_profile,
+        "planned_mcp_tool_calls": planned_calls,
         "scenarios_built": len(scenarios),
         "scenario_task_ids": [s.id for s in scenarios],
         "strip": asdict(strip_r),
@@ -410,7 +746,8 @@ async def run_single_iteration(
 async def run_benchmark(
     iterations: int,
 ) -> dict[str, Any]:
-    discovered = discover_node_mcp_servers(ROOT)
+    os.environ.setdefault("PLAYWRIGHT_MCP_HEADLESS", "1")
+    discovered = _with_headless_playwright(discover_node_mcp_servers(ROOT))
     missing = {"playwright", "wiki", "memory"} - {d.server_id for d in discovered}
     if missing:
         raise SystemExit(
@@ -436,6 +773,15 @@ async def run_benchmark(
     full_sums = [r["comparison"]["full_sum_task_ms"] for r in per_iteration]
     iter_walls = [r["iteration_wall_ms"] for r in per_iteration]
 
+    saved_vs_naive = [
+        float(r["comparison"]["approx_tokens_saved_strip_vs_naive_upfront"])
+        for r in per_iteration
+    ]
+    ratio_naive_strip = [
+        float(r["comparison"]["approx_ratio_naive_upfront_to_strip_workflow"])
+        for r in per_iteration
+    ]
+
     summary = {
         "iterations": iterations,
         "total_suite_wall_ms": total_wall_ms,
@@ -449,15 +795,30 @@ async def run_benchmark(
         "all_tools_json_tokens_sample": per_iteration[0]["comparison"][
             "strip_all_tools_json_tokens"
         ],
+        "naive_full_registry_prompt_approx_tokens_sample": per_iteration[0]["comparison"][
+            "naive_full_registry_prompt_approx_tokens"
+        ],
+        "strip_staged_workflow_prompt_approx_tokens_sample": per_iteration[0]["comparison"][
+            "strip_staged_workflow_prompt_approx_tokens"
+        ],
+        "approx_tokens_saved_strip_vs_naive_upfront": _agg(
+            "approx_tokens_saved_strip_vs_naive_upfront", saved_vs_naive
+        ),
+        "approx_ratio_naive_upfront_to_strip_workflow": _agg(
+            "approx_ratio_naive_upfront_to_strip_workflow", ratio_naive_strip
+        ),
     }
 
     return {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "config": {
             "iterations": iterations,
-            "suite_version": 2,
+            "suite_version": 4,
             "silent_default": True,
+            "playwright_mcp_flags": ["--headless", "--isolated"],
+            "playwright_env": {"PLAYWRIGHT_MCP_HEADLESS": "1"},
         },
+        "workflow_interpretation": WORKFLOW_INTERPRETATION,
         "discovery": [
             {"package": d.package_name, "server_id": d.server_id, "command": d.command}
             for d in discovered
@@ -510,7 +871,14 @@ def main() -> None:
     logging.getLogger("strip_mcp").setLevel(logging.CRITICAL)
     logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
-    payload = run_sync(args.iterations)
+    if args.verbose:
+        payload = run_sync(args.iterations)
+    else:
+        with open(os.devnull, "w", encoding="utf-8") as _dn_out:
+            with open(os.devnull, "w", encoding="utf-8") as _dn_err:
+                with redirect_stdout(_dn_out), redirect_stderr(_dn_err):
+                    payload = run_sync(args.iterations)
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -518,6 +886,9 @@ def main() -> None:
         print("=== Strip vs full-schema benchmark ===\n")
         print(f"Iterations: {args.iterations}")
         print(f"Wrote: {out_path}")
+        p0 = payload["per_iteration"][0]
+        print(f"First iteration workflow_profile: {p0.get('workflow_profile')}")
+        print(f"Planned MCP tool calls (iter 1): {p0.get('planned_mcp_tool_calls')}")
         if "summary" in payload:
             s = payload["summary"]
             print(f"Total suite wall: {s['total_suite_wall_ms']} ms")
@@ -528,6 +899,23 @@ def main() -> None:
             print(
                 f"full_sum_task_ms mean: {s['full_sum_task_ms'].get('mean')} "
                 f"(min {s['full_sum_task_ms'].get('min')}, max {s['full_sum_task_ms'].get('max')})"
+            )
+            print("\n--- Workflow token proxies (see workflow_interpretation in JSON) ---")
+            c0 = payload["per_iteration"][0]["comparison"]
+            print(
+                f"Naive full-registry prompt ~tokens: {c0['naive_full_registry_prompt_approx_tokens']}"
+            )
+            print(
+                f"Strip staged workflow ~tokens:     {c0['strip_staged_workflow_prompt_approx_tokens']}"
+            )
+            print(
+                f"Approx saved (naive − strip):      {c0['approx_tokens_saved_strip_vs_naive_upfront']}"
+            )
+            print(
+                f"Approx ratio naive / strip:        {c0['approx_ratio_naive_upfront_to_strip_workflow']}"
+            )
+            print(
+                f"Extra ~tokens if schema every call: {c0['approx_extra_tokens_schema_every_call_vs_unique_cached']}"
             )
 
 

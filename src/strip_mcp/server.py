@@ -7,7 +7,7 @@ from typing import Any
 
 from .connection.base import MCPConnection
 from .connection.stdio import StdioConnection
-from .errors import ServerStartError, ToolExecutionError
+from .errors import ToolExecutionError
 from .types import ToolBrief, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -91,22 +91,13 @@ class ServerHandle:
             description = self._overrides.get(raw_name, raw.get("description", ""))
             input_schema = raw.get("inputSchema", {})
 
-            if self.staged:
-                brief = ToolBrief(
-                    name=namespaced,
-                    description=description,
-                    server_id=self.server_id,
-                    requires_params=_requires_params(input_schema),
-                )
-            else:
-                # staged=False: include full schema in Stage 1
-                brief = ToolBrief(
-                    name=namespaced,
-                    description=description,
-                    server_id=self.server_id,
-                    requires_params=_requires_params(input_schema),
-                    full_schema=input_schema,
-                )
+            brief = ToolBrief(
+                name=namespaced,
+                description=description,
+                server_id=self.server_id,
+                requires_params=_requires_params(input_schema),
+                full_schema=None if self.staged else input_schema,
+            )
             briefs.append(brief)
         return briefs
 

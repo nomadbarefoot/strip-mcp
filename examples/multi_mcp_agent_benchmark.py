@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -77,7 +78,16 @@ async def build_full_schemas_json(mcp: StripMCP, tools: list) -> str:
 
 
 async def run() -> BenchmarkReport:
-    discovered = discover_node_mcp_servers(ROOT)
+    os.environ.setdefault("PLAYWRIGHT_MCP_HEADLESS", "1")
+    raw = discover_node_mcp_servers(ROOT)
+    discovered = [
+        (
+            replace(d, command=[*d.command, "--headless", "--isolated"])
+            if d.server_id == "playwright"
+            else d
+        )
+        for d in raw
+    ]
     need = {"playwright", "wiki", "memory"}
     have = {d.server_id for d in discovered}
     if not need <= have:

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "servers": {
+    "playwright": {
+      "command": [
+        "node",
+        "/Users/ayan/Documents/LM_Projects/strip-mcp/node_modules/@playwright/mcp/cli.js"
+      ]
+    }
+  }
+}
