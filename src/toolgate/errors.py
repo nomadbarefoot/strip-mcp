@@ -1,19 +1,19 @@
-"""All error types for strip-mcp."""
+"""All error types for toolgate."""
 
 
-class StripError(Exception):
-    """Base error for all strip-mcp errors."""
+class ToolGateError(Exception):
+    """Base error for all toolgate errors."""
 
 
-class ServerStartError(StripError):
+class ServerStartError(ToolGateError):
     """Subprocess failed to start or handshake failed."""
 
 
-class ServerCrashedError(StripError):
+class ServerCrashedError(ToolGateError):
     """Subprocess died mid-session."""
 
 
-class RemoteRPCError(StripError):
+class RemoteRPCError(ToolGateError):
     """JSON-RPC error returned by a remote MCP server."""
 
     def __init__(self, error: object) -> None:
@@ -30,7 +30,7 @@ class RemoteRPCError(StripError):
         super().__init__(f"RPC error: {error!r}")
 
 
-class ToolNotFoundError(StripError):
+class ToolNotFoundError(ToolGateError):
     """LLM requested a tool name that doesn't exist."""
 
     def __init__(self, name: str, suggestion: str | None = None) -> None:
@@ -42,11 +42,11 @@ class ToolNotFoundError(StripError):
         super().__init__(msg)
 
 
-class ToolCollisionError(StripError):
+class ToolCollisionError(ToolGateError):
     """Two servers registered the same tool name (namespace=False collision)."""
 
 
-class ToolExecutionError(StripError):
+class ToolExecutionError(ToolGateError):
     """Tool call returned an error from the MCP server."""
 
     def __init__(self, tool_name: str, mcp_error: object) -> None:
@@ -55,7 +55,7 @@ class ToolExecutionError(StripError):
         super().__init__(f"Tool {tool_name!r} returned error: {mcp_error}")
 
 
-class ToolTimeoutError(StripError):
+class ToolTimeoutError(ToolGateError):
     """Tool call exceeded configured timeout."""
 
     def __init__(self, tool_name: str, timeout: float) -> None:
@@ -64,5 +64,5 @@ class ToolTimeoutError(StripError):
         super().__init__(f"Tool {tool_name!r} timed out after {timeout}s")
 
 
-class SchemaFetchError(StripError):
+class SchemaFetchError(ToolGateError):
     """get_schemas called for a non-existent tool."""

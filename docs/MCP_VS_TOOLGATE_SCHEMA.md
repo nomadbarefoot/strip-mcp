@@ -1,21 +1,21 @@
-# Native MCP tool shape vs strip-mcp
+# Native MCP tool shape vs toolgate
 
-This document places **standard MCP tool listings** next to **strip-mcp’s** representations so you can see **what is omitted or replaced** in staged mode and **where token savings** come from. For architecture context, see [ARCHITECTURE.md](./ARCHITECTURE.md).
+This document places **standard MCP tool listings** next to **toolgate’s** representations so you can see **what is omitted or replaced** in staged mode and **where token savings** come from. For architecture context, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ---
 
-## 1. Two ways to use strip-mcp
+## 1. Two ways to use toolgate
 
 | Surface | What the model / caller sees | Full schemas in “discovery” step? |
 |--------|------------------------------|----------------------------------|
-| **Python library** (`StripMCP`) | `ToolBrief` (Stage 1), `ToolSchema` (Stage 2), `ToolResult` (Stage 3) | Only if `staged=False` (each brief can carry `full_schema`) |
-| **MCP proxy** (`strip-mcp proxy`) | JSON-RPC `tools/list` with **stub** `inputSchema` per tool + meta-tool `__strip__get_schema` | No — real schemas arrive via `tools/call` on `__strip__get_schema` or are read from in-process cache in the library path |
+| **Python library** (`ToolGate`) | `ToolBrief` (Stage 1), `ToolSchema` (Stage 2), `ToolResult` (Stage 3) | Only if `staged=False` (each brief can carry `full_schema`) |
+| **MCP proxy** (`toolgate proxy`) | JSON-RPC `tools/list` with **stub** `inputSchema` per tool + meta-tool `__toolgate__get_schema` | No — real schemas arrive via `tools/call` on `__toolgate__get_schema` or are read from in-process cache in the library path |
 
-Upstream servers still speak **native MCP**; strip-mcp **caches** full `inputSchema` after its own `tools/list` and **chooses what to expose** per stage.
+Upstream servers still speak **native MCP**; toolgate **caches** full `inputSchema` after its own `tools/list` and **chooses what to expose** per stage.
 
 ---
 
-## 2. One tool: native MCP vs strip-mcp (side by side)
+## 2. One tool: native MCP vs toolgate (side by side)
 
 ### 2.1 Native MCP (typical `tools/list` entry)
 
@@ -35,11 +35,11 @@ Per the MCP tools model, each tool includes at least **name**, optional **descri
 }
 ```
 
-### 2.2 strip-mcp — Python API (Stage 1: `ToolBrief`)
+### 2.2 toolgate — Python API (Stage 1: `ToolBrief`)
 
 Full schema is **not** a field in Stage 1 when `staged=True` (default). The library keeps a **boolean** derived from the upstream schema instead of serializing the whole object.
 
-| Field | Native MCP | strip-mcp `ToolBrief` |
+| Field | Native MCP | toolgate `ToolBrief` |
 |-------|------------|------------------------|
 | Identity | `name` | `name` — often **namespaced**: `server_id__raw_name` when `namespace=True` |
 | Human text | `description` | `description` — same or **override** via `description_overrides` |
@@ -57,7 +57,7 @@ ToolBrief(
 )
 ```
 
-### 2.3 strip-mcp — Python API (Stage 2: `ToolSchema`)
+### 2.3 toolgate — Python API (Stage 2: `ToolSchema`)
 
 When you need arguments, you request **only named tools**. Each item is the **full** upstream `inputSchema`, unchanged in meaning.
 
@@ -68,14 +68,14 @@ ToolSchema(
 )
 ```
 
-### 2.4 strip-mcp — MCP proxy wire (`tools/list` entry for the same logical tool)
+### 2.4 toolgate — MCP proxy wire (`tools/list` entry for the same logical tool)
 
-The proxy must expose valid MCP tool entries, so each tool still has an **`inputSchema`**, but it is a **small stub** (accept-any object) — not the real upstream schema. Descriptions may **hint** the model to call `__strip__get_schema` first.
+The proxy must expose valid MCP tool entries, so each tool still has an **`inputSchema`**, but it is a **small stub** (accept-any object) — not the real upstream schema. Descriptions may **hint** the model to call `__toolgate__get_schema` first.
 
 ```json
 {
   "name": "playwright__browser_navigate",
-  "description": "Navigate to URL (call __strip__get_schema to get parameters before use)",
+  "description": "Navigate to URL (call __toolgate__get_schema to get parameters before use)",
   "inputSchema": {
     "type": "object",
     "properties": {},
@@ -84,7 +84,7 @@ The proxy must expose valid MCP tool entries, so each tool still has an **`input
 }
 ```
 
-**Added once per session (fixed overhead):** meta-tool `__strip__get_schema` with its own small `inputSchema` (`tool_name` string). See [ARCHITECTURE.md §3.3](./ARCHITECTURE.md#33-raw-json-rpc-examples-native-mcp-vs-strip-mcp) for full JSON-RPC examples.
+**Added once per session (fixed overhead):** meta-tool `__toolgate__get_schema` with its own small `inputSchema` (`tool_name` string). See [ARCHITECTURE.md §3.3](./ARCHITECTURE.md#33-raw-json-rpc-examples-native-mcp-vs-toolgate) for full JSON-RPC examples.
 
 ---
 
@@ -95,7 +95,7 @@ The proxy must expose valid MCP tool entries, so each tool still has an **`input
 - **One block per tool**: `name` + `description` + **full** `inputSchema`.
 - Token cost scales roughly with **(number of tools) × (average schema size)**.
 
-### strip-mcp Stage 1 (`staged=True`)
+### toolgate Stage 1 (`staged=True`)
 
 **Library path**
 
@@ -107,7 +107,7 @@ The proxy must expose valid MCP tool entries, so each tool still has an **`input
 - **Per tool**: name + description + **stub** schema (constant small size).
 - **Plus** one meta-tool definition for Stage 2 schema retrieval.
 
-### strip-mcp Stage 2 (on demand)
+### toolgate Stage 2 (on demand)
 
 - **Only** schemas for tools the agent asked for — not the entire registry.
 
@@ -117,7 +117,7 @@ The proxy must expose valid MCP tool entries, so each tool still has an **`input
 
 | Mechanism | What shrinks | Caveat |
 |-----------|----------------|--------|
-| **Omit full `inputSchema` from Stage 1** | Largest win: no per-tool JSON Schema blobs in the first prompt/tool-definition pass | Model must do a second step (`get_schemas` / `__strip__get_schema`) before calling tools with rich arguments |
+| **Omit full `inputSchema` from Stage 1** | Largest win: no per-tool JSON Schema blobs in the first prompt/tool-definition pass | Model must do a second step (`get_schemas` / `__toolgate__get_schema`) before calling tools with rich arguments |
 | **Stub `inputSchema` in proxy** | Keeps MCP wire valid with a **constant tiny** schema instead of variable large ones | Same as above |
 | **`requires_params` vs full schema** | One bit of intent (`True`/`False`) vs hundreds of tokens of nested JSON | Coarse: does not list parameter names until Stage 2 |
 | **Subset schema fetch** | Stage 2 pays only for **k** tools, not **N** | If the model requests schemas for almost all tools, savings narrow |
@@ -126,7 +126,7 @@ The proxy must expose valid MCP tool entries, so each tool still has an **`input
 **Where tokens are “spent” vs “saved”**
 
 - **Saved**: Anything that would have repeated **full JSON Schema** text in the initial tool list or system prompt (Stage 1).
-- **Spent elsewhere**: Short descriptions, namespaced names, stub schemas, the `__strip__get_schema` tool (proxy), and any Stage 2 calls that pull full schemas for selected tools.
+- **Spent elsewhere**: Short descriptions, namespaced names, stub schemas, the `__toolgate__get_schema` tool (proxy), and any Stage 2 calls that pull full schemas for selected tools.
 - **Not an extra network round-trip for schema in the common library case**: the handle already cached upstream `inputSchema` in memory at startup (`ServerHandle._load_tools`); Stage 2 is **exposing** cached data to the model, not re-fetching from the subprocess unless you `refresh()`.
 
 **Measured ratios** (same methodology as [ARCHITECTURE.md §9](./ARCHITECTURE.md#9-benchmark-results)): staged workflow vs naive full-registry prompt showed roughly **6× fewer** tokens in the benchmark scenario; see [BENCHMARKS_AND_TESTS.md](./BENCHMARKS_AND_TESTS.md) for scripts and caveats (token estimate uses `len(utf8_text) // 4`, a rough proxy).
@@ -135,10 +135,10 @@ The proxy must expose valid MCP tool entries, so each tool still has an **`input
 
 ## 5. Quick reference: stage mapping
 
-| Stage | Native MCP (conceptual) | strip-mcp library | strip-mcp proxy |
+| Stage | Native MCP (conceptual) | toolgate library | toolgate proxy |
 |-------|-------------------------|-------------------|-----------------|
-| 1 — List | `tools/list` with full schemas | `list_tools()` → `ToolBrief[]`; `list_tools_text()` | `tools/list` with stub schemas + `__strip__get_schema` |
-| 2 — Schema detail | *(already in list)* | `get_schemas(names)` → `ToolSchema[]` | `tools/call` `__strip__get_schema` |
+| 1 — List | `tools/list` with full schemas | `list_tools()` → `ToolBrief[]`; `list_tools_text()` | `tools/list` with stub schemas + `__toolgate__get_schema` |
+| 2 — Schema detail | *(already in list)* | `get_schemas(names)` → `ToolSchema[]` | `tools/call` `__toolgate__get_schema` |
 | 3 — Execute | `tools/call` | `call(name, args)` | `tools/call` namespaced name → upstream |
 
 ---
@@ -152,18 +152,18 @@ The proxy must expose valid MCP tool entries, so each tool still has an **`input
 
 ## 7. Appendix: full side-by-side capture (`@playwright/mcp`)
 
-**What this is:** A **live** `tools/list` from **`node node_modules/@playwright/mcp/cli.js`** (raw MCP), next to the **strip-mcp proxy–equivalent** payload for the same upstream with `server_id=playwright` (`staged=True`, `namespace=True`). Captured in this repo on **2026-04-07**.
+**What this is:** A **live** `tools/list` from **`node node_modules/@playwright/mcp/cli.js`** (raw MCP), next to the **toolgate proxy–equivalent** payload for the same upstream with `server_id=playwright` (`staged=True`, `namespace=True`). Captured in this repo on **2026-04-07**.
 
 **Sizes (compact JSON, `len(s) // 4` token proxy):**
 
 | Payload | Tools | Characters (compact) | ~Tokens |
 |---------|-------|----------------------|---------|
 | Raw Playwright `tools/list` `result.tools` | 21 | 15,505 | ~3,876 |
-| strip-mcp `result.tools` (21 brief + `__strip__get_schema`) | 22 | 5,291 | ~1,323 |
+| toolgate `result.tools` (21 brief + `__toolgate__get_schema`) | 22 | 5,291 | ~1,323 |
 
-Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per tool; strip-mcp replaces each **`inputSchema`** with the same stub and appends the meta-tool.
+Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per tool; toolgate replaces each **`inputSchema`** with the same stub and appends the meta-tool.
 
-### 7.1 strip-mcp — full `tools/list` JSON-RPC `result` (Playwright only)
+### 7.1 toolgate — full `tools/list` JSON-RPC `result` (Playwright only)
 
 ```json
 {
@@ -182,7 +182,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_resize",
-        "description": "Resize the browser window (call __strip__get_schema to get parameters before use)",
+        "description": "Resize the browser window (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -191,7 +191,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_console_messages",
-        "description": "Returns all console messages (call __strip__get_schema to get parameters before use)",
+        "description": "Returns all console messages (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -200,7 +200,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_handle_dialog",
-        "description": "Handle a dialog (call __strip__get_schema to get parameters before use)",
+        "description": "Handle a dialog (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -209,7 +209,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_evaluate",
-        "description": "Evaluate JavaScript expression on page or element (call __strip__get_schema to get parameters before use)",
+        "description": "Evaluate JavaScript expression on page or element (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -218,7 +218,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_file_upload",
-        "description": "Upload one or multiple files (call __strip__get_schema to get parameters before use)",
+        "description": "Upload one or multiple files (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -227,7 +227,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_fill_form",
-        "description": "Fill multiple form fields (call __strip__get_schema to get parameters before use)",
+        "description": "Fill multiple form fields (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -236,7 +236,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_press_key",
-        "description": "Press a key on the keyboard (call __strip__get_schema to get parameters before use)",
+        "description": "Press a key on the keyboard (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -245,7 +245,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_type",
-        "description": "Type text into editable element (call __strip__get_schema to get parameters before use)",
+        "description": "Type text into editable element (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -254,7 +254,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_navigate",
-        "description": "Navigate to a URL (call __strip__get_schema to get parameters before use)",
+        "description": "Navigate to a URL (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -272,7 +272,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_network_requests",
-        "description": "Returns all network requests since loading the page (call __strip__get_schema to get parameters before use)",
+        "description": "Returns all network requests since loading the page (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -281,7 +281,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_run_code",
-        "description": "Run Playwright code snippet (call __strip__get_schema to get parameters before use)",
+        "description": "Run Playwright code snippet (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -290,7 +290,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_take_screenshot",
-        "description": "Take a screenshot of the current page. You can't perform actions based on the screenshot, use browser_snapshot for actions. (call __strip__get_schema to get parameters before use)",
+        "description": "Take a screenshot of the current page. You can't perform actions based on the screenshot, use browser_snapshot for actions. (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -299,7 +299,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_snapshot",
-        "description": "Capture accessibility snapshot of the current page, this is better than screenshot (call __strip__get_schema to get parameters before use)",
+        "description": "Capture accessibility snapshot of the current page, this is better than screenshot (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -308,7 +308,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_click",
-        "description": "Perform click on a web page (call __strip__get_schema to get parameters before use)",
+        "description": "Perform click on a web page (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -317,7 +317,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_drag",
-        "description": "Perform drag and drop between two elements (call __strip__get_schema to get parameters before use)",
+        "description": "Perform drag and drop between two elements (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -326,7 +326,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_hover",
-        "description": "Hover over element on page (call __strip__get_schema to get parameters before use)",
+        "description": "Hover over element on page (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -335,7 +335,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_select_option",
-        "description": "Select an option in a dropdown (call __strip__get_schema to get parameters before use)",
+        "description": "Select an option in a dropdown (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -344,7 +344,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_tabs",
-        "description": "List, create, close, or select a browser tab. (call __strip__get_schema to get parameters before use)",
+        "description": "List, create, close, or select a browser tab. (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -353,7 +353,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
       },
       {
         "name": "playwright__browser_wait_for",
-        "description": "Wait for text to appear or disappear or a specified time to pass (call __strip__get_schema to get parameters before use)",
+        "description": "Wait for text to appear or disappear or a specified time to pass (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -361,7 +361,7 @@ Raw MCP includes **`annotations`** on every tool and full **`inputSchema`** per 
         }
       },
       {
-        "name": "__strip__get_schema",
+        "name": "__toolgate__get_schema",
         "description": "Returns the full parameter schema for any upstream tool. Call this before using a tool whose parameters you don't know.",
         "inputSchema": {
           "type": "object",

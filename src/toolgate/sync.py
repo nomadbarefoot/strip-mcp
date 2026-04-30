@@ -1,20 +1,20 @@
-"""SyncStripMCP — blocking wrapper around StripMCP."""
+"""SyncToolGate — blocking wrapper around ToolGate."""
 
 from __future__ import annotations
 
 import asyncio
 from typing import Any
 
-from .core import StripMCP
+from .core import ToolGate
 from .types import ToolBrief, ToolResult, ToolSchema
 
 
-class SyncStripMCP:
-    """Synchronous interface to StripMCP. Runs an internal event loop."""
+class SyncToolGate:
+    """Synchronous interface to ToolGate. Runs an internal event loop."""
 
     def __init__(self, default_timeout: float = 30.0) -> None:
         self._loop = asyncio.new_event_loop()
-        self._async = StripMCP(default_timeout=default_timeout)
+        self._async = ToolGate(default_timeout=default_timeout)
 
     def add_server(
         self,
@@ -61,7 +61,7 @@ class SyncStripMCP:
     def refresh(self, server_id: str | None = None) -> None:
         self._loop.run_until_complete(self._async.refresh(server_id))
 
-    def __enter__(self) -> "SyncStripMCP":
+    def __enter__(self) -> "SyncToolGate":
         return self
 
     def __exit__(self, *_: object) -> None:

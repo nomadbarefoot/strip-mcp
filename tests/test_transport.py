@@ -8,15 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from strip_mcp.connection.stdio import StdioConnection
-from strip_mcp.errors import (
+from toolgate.connection.stdio import StdioConnection
+from toolgate.errors import (
     RemoteRPCError,
     ServerCrashedError,
     ServerStartError,
     ToolExecutionError,
     ToolTimeoutError,
 )
-from strip_mcp.server import ServerHandle, _requires_params
+from toolgate.server import ServerHandle, _requires_params
 
 MOCK = [sys.executable, str(Path(__file__).parent / "mock_mcp_server.py")]
 MOCK_FAIL = MOCK + ["--fail", "tool_1"]

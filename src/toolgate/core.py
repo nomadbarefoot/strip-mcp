@@ -1,4 +1,4 @@
-"""StripMCP — top-level orchestrator."""
+"""ToolGate — top-level orchestrator."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .types import ToolBrief, ToolResult, ToolSchema
 logger = logging.getLogger(__name__)
 
 
-class StripMCP:
+class ToolGate:
     """Async orchestrator for multi-server staged MCP tool access."""
 
     def __init__(self, default_timeout: float = 30.0) -> None:
@@ -25,7 +25,7 @@ class StripMCP:
 
     # ── context manager ────────────────────────────────────────────────────
 
-    async def __aenter__(self) -> "StripMCP":
+    async def __aenter__(self) -> "ToolGate":
         return self
 
     async def __aexit__(self, *_: object) -> None:

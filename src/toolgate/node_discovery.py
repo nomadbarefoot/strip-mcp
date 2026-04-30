@@ -1,6 +1,6 @@
 """Discover locally installed Node MCP servers from package.json + node_modules.
 
-Maps known npm package names to (server_id, path under node_modules) so StripMCP can
+Maps known npm package names to (server_id, path under node_modules) so ToolGate can
 register servers without hand-editing paths when dependencies are present.
 """
 
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Known MCP packages: npm name -> (strip server_id, relative path to entry .js from package root)
+# Known MCP packages: npm name -> (server_id, relative path to entry .js from package root)
 DEFAULT_NODE_MCP_REGISTRY: dict[str, tuple[str, str]] = {
     "@playwright/mcp": ("playwright", "cli.js"),
     "wikipedia-mcp": ("wiki", "dist/index.js"),

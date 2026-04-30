@@ -1,11 +1,11 @@
-"""Compare Strip (staged) vs full-schema-upfront MCP: single or multi-iteration suite.
+"""Compare ToolGate staged delivery vs full-schema-upfront MCP.
 
 Uses discover_node_mcp_servers() for Node MCPs under node_modules.
 
 Examples:
-  python examples/strip_vs_full_benchmark.py
-  python examples/strip_vs_full_benchmark.py --iterations 12 --output examples/report.json
-  python examples/strip_vs_full_benchmark.py -v --iterations 1
+  python examples/toolgate_vs_full_benchmark.py
+  python examples/toolgate_vs_full_benchmark.py --iterations 12 --output examples/report.json
+  python examples/toolgate_vs_full_benchmark.py -v --iterations 1
 
 Default: silent (no stdout). Use -v / --verbose for human-readable summary.
 """
@@ -27,9 +27,9 @@ from typing import Any, Literal
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from strip_mcp import StripMCP
-from strip_mcp.errors import StripError
-from strip_mcp.node_discovery import DiscoveredNodeServer, discover_node_mcp_servers
+from toolgate import ToolGate
+from toolgate.errors import ToolGateError
+from toolgate.node_discovery import DiscoveredNodeServer, discover_node_mcp_servers
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -43,7 +43,7 @@ WORKFLOW_INTERPRETATION: dict[str, str] = {
         "in the system prompt (or first-turn tool payload) before the model plans any call. "
         "Benchmark proxy: all_tools_full_schemas_json_approx_tokens (pretty-printed JSON of all tools)."
     ),
-    "strip_staged_workflow": (
+    "staged_workflow": (
         "Real-world analogue: Stage 1 exposes a compact catalog (list_tools_text: names, descriptions, "
         "param hints). Each tool's inputSchema is materialized only when the agent needs to call it. "
         "Benchmark proxy: stage1_list_tools_text_approx_tokens plus JSON Schema once per distinct tool "
@@ -65,7 +65,7 @@ WORKFLOW_INTERPRETATION: dict[str, str] = {
     "silent_stdio": (
         "Unless you pass -v/--verbose, this process redirects Python stdout/stderr to os.devnull during the "
         "benchmark so library chatter does not interrupt your terminal; MCP subprocess stderr stays DEBUG-only "
-        "in strip_mcp loggers (raised to CRITICAL for the run)."
+        "in toolgate loggers (raised to CRITICAL for the run)."
     ),
     "workflow_profiles": (
         "Each iteration uses a named workflow_profile (low_tool_flash, wiki_heavy, browser_heavy, memory_heavy, "
@@ -118,7 +118,7 @@ class TaskRecord:
 
 @dataclass
 class ModeReport:
-    mode: Literal["strip", "full"]
+    mode: Literal["staged", "full"]
     staged: bool
     servers: list[str]
     tool_count: int
@@ -210,7 +210,7 @@ def _edge_unknown() -> ScenarioTask:
     return ScenarioTask(
         "edge_unknown_tool",
         "Edge: namespaced tool that does not exist (expect ToolNotFound)",
-        [("wiki__strip_benchmark_nonexistent_tool_xyz", {})],
+        [("wiki__toolgate_benchmark_nonexistent_tool_xyz", {})],
         expect_failure=True,
     )
 
@@ -496,7 +496,7 @@ def build_scenarios(iteration_index: int) -> tuple[list[ScenarioTask], str]:
     return tasks, profile
 
 
-async def build_full_schemas_json(mcp: StripMCP, tools: list) -> str:
+async def build_full_schemas_json(mcp: ToolGate, tools: list) -> str:
     payload = []
     for b in tools:
         sch = (await mcp.get_schemas([b.name]))[0]
@@ -511,7 +511,7 @@ async def build_full_schemas_json(mcp: StripMCP, tools: list) -> str:
 
 
 async def _run_one_step(
-    mcp: StripMCP,
+    mcp: ToolGate,
     tool_name: str,
     args: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], int]:
@@ -555,7 +555,7 @@ def _record_task_error(
 
 
 async def _run_scenario_tasks(
-    mcp: StripMCP,
+    mcp: ToolGate,
     scenarios: list[ScenarioTask],
 ) -> tuple[list[TaskRecord], list[str], int, int]:
     tasks_out: list[TaskRecord] = []
@@ -579,7 +579,7 @@ async def _run_scenario_tasks(
                     seen_tool_names.add(tool_name)
                     unique_schema_chars += sch_chars
                 tr.steps.append(step)
-        except StripError as e:
+        except ToolGateError as e:
             _record_task_error(tr, sc, e, failure_summary)
         except Exception as e:
             _record_task_error(tr, sc, e, failure_summary)
@@ -596,10 +596,10 @@ async def run_one_mode(
     discovered: list,
     scenarios: list[ScenarioTask],
 ) -> ModeReport:
-    mode: Literal["strip", "full"] = "strip" if staged else "full"
+    mode: Literal["staged", "full"] = "staged" if staged else "full"
 
     t0 = time.perf_counter()
-    async with StripMCP(default_timeout=120.0) as mcp:
+    async with ToolGate(default_timeout=120.0) as mcp:
         for d in discovered:
             mcp.add_server(d.server_id, command=d.command, staged=staged)
 
@@ -683,51 +683,51 @@ async def run_single_iteration(
     scenarios, workflow_profile = build_scenarios(iteration_index)
     planned_calls = sum(len(s.steps) for s in scenarios)
 
-    strip_r = await run_one_mode(True, discovered, scenarios)
+    staged_r = await run_one_mode(True, discovered, scenarios)
     full_r = await run_one_mode(False, discovered, scenarios)
 
-    upfront = strip_r.all_tools_full_schemas_json_approx_tokens
-    strip_wf = strip_r.workflow_catalog_plus_unique_schemas_approx_tokens
+    upfront = staged_r.all_tools_full_schemas_json_approx_tokens
+    staged_wf = staged_r.workflow_catalog_plus_unique_schemas_approx_tokens
     comparison = {
-        "strip_stage1_tokens": strip_r.stage1_list_tools_text_approx_tokens,
+        "staged_stage1_tokens": staged_r.stage1_list_tools_text_approx_tokens,
         "full_stage1_tokens": full_r.stage1_list_tools_text_approx_tokens,
-        "strip_all_tools_json_tokens": strip_r.all_tools_full_schemas_json_approx_tokens,
+        "staged_all_tools_json_tokens": staged_r.all_tools_full_schemas_json_approx_tokens,
         "full_all_tools_json_tokens": full_r.all_tools_full_schemas_json_approx_tokens,
         "naive_full_registry_prompt_approx_tokens": upfront,
-        "strip_staged_workflow_prompt_approx_tokens": strip_wf,
-        "approx_tokens_saved_strip_vs_naive_upfront": upfront - strip_wf,
-        "approx_ratio_naive_upfront_to_strip_workflow": (
-            round(upfront / strip_wf, 2) if strip_wf else 0.0
+        "staged_workflow_prompt_approx_tokens": staged_wf,
+        "approx_tokens_saved_staged_vs_naive_upfront": upfront - staged_wf,
+        "approx_ratio_naive_upfront_to_staged_workflow": (
+            round(upfront / staged_wf, 2) if staged_wf else 0.0
         ),
-        "strip_unique_executed_tool_schemas_approx_tokens": (
-            strip_r.unique_tool_schemas_approx_tokens
+        "staged_unique_executed_tool_schemas_approx_tokens": (
+            staged_r.unique_tool_schemas_approx_tokens
         ),
         "approx_extra_tokens_schema_every_call_vs_unique_cached": (
-            strip_r.workflow_catalog_plus_schema_on_every_tool_call_approx_tokens
-            - strip_wf
+            staged_r.workflow_catalog_plus_schema_on_every_tool_call_approx_tokens
+            - staged_wf
         ),
         "full_mode_catalog_plus_unique_approx_tokens": (
             full_r.workflow_catalog_plus_unique_schemas_approx_tokens
         ),
-        "strip_startup_ms": strip_r.startup_ms,
+        "staged_startup_ms": staged_r.startup_ms,
         "full_startup_ms": full_r.startup_ms,
-        "strip_sum_task_ms": round(total_task_ms(strip_r), 2),
+        "staged_sum_task_ms": round(total_task_ms(staged_r), 2),
         "full_sum_task_ms": round(total_task_ms(full_r), 2),
-        "strip_build_full_schema_json_ms": strip_r.full_schema_json_build_ms,
+        "staged_build_full_schema_json_ms": staged_r.full_schema_json_build_ms,
         "full_build_full_schema_json_ms": full_r.full_schema_json_build_ms,
-        "strip_list_tools_ms": strip_r.list_tools_ms,
+        "staged_list_tools_ms": staged_r.list_tools_ms,
         "full_list_tools_ms": full_r.list_tools_ms,
-        "token_savings_stage1_vs_all_tools_json_strip": (
-            strip_r.all_tools_full_schemas_json_approx_tokens
-            - strip_r.stage1_list_tools_text_approx_tokens
+        "token_savings_stage1_vs_all_tools_json_staged": (
+            staged_r.all_tools_full_schemas_json_approx_tokens
+            - staged_r.stage1_list_tools_text_approx_tokens
         ),
-        "edge_tasks_expected_pass_strip": sum(
-            1 for t in strip_r.tasks if t.expect_failure and t.outcome_passed
+        "edge_tasks_expected_pass_staged": sum(
+            1 for t in staged_r.tasks if t.expect_failure and t.outcome_passed
         ),
         "edge_tasks_expected_pass_full": sum(
             1 for t in full_r.tasks if t.expect_failure and t.outcome_passed
         ),
-        "tasks_passed_strip": sum(1 for t in strip_r.tasks if t.outcome_passed),
+        "tasks_passed_staged": sum(1 for t in staged_r.tasks if t.outcome_passed),
         "tasks_passed_full": sum(1 for t in full_r.tasks if t.outcome_passed),
     }
 
@@ -737,7 +737,7 @@ async def run_single_iteration(
         "planned_mcp_tool_calls": planned_calls,
         "scenarios_built": len(scenarios),
         "scenario_task_ids": [s.id for s in scenarios],
-        "strip": asdict(strip_r),
+        "toolgate": asdict(staged_r),
         "full": asdict(full_r),
         "comparison": comparison,
     }
@@ -767,45 +767,45 @@ async def run_benchmark(
 
     total_wall_ms = round((time.perf_counter() - wall0) * 1000, 2)
 
-    strip_startups = [r["comparison"]["strip_startup_ms"] for r in per_iteration]
+    staged_startups = [r["comparison"]["staged_startup_ms"] for r in per_iteration]
     full_startups = [r["comparison"]["full_startup_ms"] for r in per_iteration]
-    strip_sums = [r["comparison"]["strip_sum_task_ms"] for r in per_iteration]
+    staged_sums = [r["comparison"]["staged_sum_task_ms"] for r in per_iteration]
     full_sums = [r["comparison"]["full_sum_task_ms"] for r in per_iteration]
     iter_walls = [r["iteration_wall_ms"] for r in per_iteration]
 
     saved_vs_naive = [
-        float(r["comparison"]["approx_tokens_saved_strip_vs_naive_upfront"])
+        float(r["comparison"]["approx_tokens_saved_staged_vs_naive_upfront"])
         for r in per_iteration
     ]
-    ratio_naive_strip = [
-        float(r["comparison"]["approx_ratio_naive_upfront_to_strip_workflow"])
+    ratio_naive_staged = [
+        float(r["comparison"]["approx_ratio_naive_upfront_to_staged_workflow"])
         for r in per_iteration
     ]
 
     summary = {
         "iterations": iterations,
         "total_suite_wall_ms": total_wall_ms,
-        "strip_startup_ms": _agg("strip_startup_ms", strip_startups),
+        "staged_startup_ms": _agg("staged_startup_ms", staged_startups),
         "full_startup_ms": _agg("full_startup_ms", full_startups),
-        "strip_sum_task_ms": _agg("strip_sum_task_ms", strip_sums),
+        "staged_sum_task_ms": _agg("staged_sum_task_ms", staged_sums),
         "full_sum_task_ms": _agg("full_sum_task_ms", full_sums),
         "iteration_wall_ms": _agg("iteration_wall_ms", iter_walls),
-        "strip_stage1_tokens": per_iteration[0]["comparison"]["strip_stage1_tokens"],
+        "staged_stage1_tokens": per_iteration[0]["comparison"]["staged_stage1_tokens"],
         "full_stage1_tokens": per_iteration[0]["comparison"]["full_stage1_tokens"],
         "all_tools_json_tokens_sample": per_iteration[0]["comparison"][
-            "strip_all_tools_json_tokens"
+            "staged_all_tools_json_tokens"
         ],
         "naive_full_registry_prompt_approx_tokens_sample": per_iteration[0]["comparison"][
             "naive_full_registry_prompt_approx_tokens"
         ],
-        "strip_staged_workflow_prompt_approx_tokens_sample": per_iteration[0]["comparison"][
-            "strip_staged_workflow_prompt_approx_tokens"
+        "staged_workflow_prompt_approx_tokens_sample": per_iteration[0]["comparison"][
+            "staged_workflow_prompt_approx_tokens"
         ],
-        "approx_tokens_saved_strip_vs_naive_upfront": _agg(
-            "approx_tokens_saved_strip_vs_naive_upfront", saved_vs_naive
+        "approx_tokens_saved_staged_vs_naive_upfront": _agg(
+            "approx_tokens_saved_staged_vs_naive_upfront", saved_vs_naive
         ),
-        "approx_ratio_naive_upfront_to_strip_workflow": _agg(
-            "approx_ratio_naive_upfront_to_strip_workflow", ratio_naive_strip
+        "approx_ratio_naive_upfront_to_staged_workflow": _agg(
+            "approx_ratio_naive_upfront_to_staged_workflow", ratio_naive_staged
         ),
     }
 
@@ -834,7 +834,7 @@ def run_sync(iterations: int) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Strip vs full-schema MCP benchmark (single or multi-iteration)."
+        description="Staged vs full-schema MCP benchmark (single or multi-iteration)."
     )
     parser.add_argument(
         "--iterations",
@@ -848,7 +848,7 @@ def main() -> None:
         "-o",
         type=Path,
         default=None,
-        help="JSON report path (default: strip_vs_full_benchmark_report.json or aggregate name).",
+        help="JSON report path (default: toolgate_vs_full_benchmark_report.json or aggregate name).",
     )
     parser.add_argument(
         "--verbose",
@@ -862,13 +862,13 @@ def main() -> None:
         parser.error("--iterations must be >= 1")
 
     default_out = (
-        ROOT / "examples" / "strip_benchmark_aggregate_report.json"
+        ROOT / "examples" / "toolgate_benchmark_aggregate_report.json"
         if args.iterations > 1
-        else ROOT / "examples" / "strip_vs_full_benchmark_report.json"
+        else ROOT / "examples" / "toolgate_vs_full_benchmark_report.json"
     )
     out_path = args.output or default_out
 
-    logging.getLogger("strip_mcp").setLevel(logging.CRITICAL)
+    logging.getLogger("toolgate").setLevel(logging.CRITICAL)
     logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
     if args.verbose:
@@ -883,7 +883,7 @@ def main() -> None:
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     if args.verbose:
-        print("=== Strip vs full-schema benchmark ===\n")
+        print("=== Staged vs full-schema benchmark ===\n")
         print(f"Iterations: {args.iterations}")
         print(f"Wrote: {out_path}")
         p0 = payload["per_iteration"][0]
@@ -893,8 +893,8 @@ def main() -> None:
             s = payload["summary"]
             print(f"Total suite wall: {s['total_suite_wall_ms']} ms")
             print(
-                f"strip_sum_task_ms mean: {s['strip_sum_task_ms'].get('mean')} "
-                f"(min {s['strip_sum_task_ms'].get('min')}, max {s['strip_sum_task_ms'].get('max')})"
+                f"staged_sum_task_ms mean: {s['staged_sum_task_ms'].get('mean')} "
+                f"(min {s['staged_sum_task_ms'].get('min')}, max {s['staged_sum_task_ms'].get('max')})"
             )
             print(
                 f"full_sum_task_ms mean: {s['full_sum_task_ms'].get('mean')} "
@@ -906,13 +906,13 @@ def main() -> None:
                 f"Naive full-registry prompt ~tokens: {c0['naive_full_registry_prompt_approx_tokens']}"
             )
             print(
-                f"Strip staged workflow ~tokens:     {c0['strip_staged_workflow_prompt_approx_tokens']}"
+                f"ToolGate staged workflow ~tokens:  {c0['staged_workflow_prompt_approx_tokens']}"
             )
             print(
-                f"Approx saved (naive − strip):      {c0['approx_tokens_saved_strip_vs_naive_upfront']}"
+                f"Approx saved (naive − staged):      {c0['approx_tokens_saved_staged_vs_naive_upfront']}"
             )
             print(
-                f"Approx ratio naive / strip:        {c0['approx_ratio_naive_upfront_to_strip_workflow']}"
+                f"Approx ratio naive / staged:        {c0['approx_ratio_naive_upfront_to_staged_workflow']}"
             )
             print(
                 f"Extra ~tokens if schema every call: {c0['approx_extra_tokens_schema_every_call_vs_unique_cached']}"

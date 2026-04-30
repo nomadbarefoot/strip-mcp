@@ -1,6 +1,8 @@
-"""strip-mcp: MCP middleware with staged tool delivery."""
+"""toolgate: MCP middleware with staged tool delivery."""
 
-from .core import StripMCP
+from .core import ToolGate
+from .catalog import Catalog, CatalogTool
+from .collector import CollectionReport, ServerCollectResult, collect_inventory
 from .node_discovery import (
     DEFAULT_NODE_MCP_REGISTRY,
     DiscoveredNodeServer,
@@ -11,23 +13,28 @@ from .errors import (
     SchemaFetchError,
     ServerCrashedError,
     ServerStartError,
-    StripError,
+    ToolGateError,
     ToolCollisionError,
     ToolExecutionError,
     ToolNotFoundError,
     ToolTimeoutError,
 )
-from .sync import SyncStripMCP
+from .sync import SyncToolGate
 from .types import ToolBrief, ToolResult, ToolSchema
 
 __all__ = [
-    "StripMCP",
-    "SyncStripMCP",
+    "ToolGate",
+    "SyncToolGate",
+    "Catalog",
+    "CatalogTool",
+    "CollectionReport",
+    "ServerCollectResult",
+    "collect_inventory",
     "DEFAULT_NODE_MCP_REGISTRY",
     "DiscoveredNodeServer",
     "discover_node_mcp_servers",
     # errors
-    "StripError",
+    "ToolGateError",
     "ServerStartError",
     "ServerCrashedError",
     "RemoteRPCError",

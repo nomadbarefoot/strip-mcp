@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from strip_mcp import cli
-from strip_mcp.node_discovery import discover_node_mcp_servers
-from strip_mcp.setup.discovery import discover_global_node_mcp_servers, discover_installed_mcps
-from strip_mcp.setup.hosts import get_host_adapters
-from strip_mcp.setup.models import DiscoveredMCP
+from toolgate import cli
+from toolgate.node_discovery import discover_node_mcp_servers
+from toolgate.setup.discovery import discover_global_node_mcp_servers, discover_installed_mcps
+from toolgate.setup.hosts import get_host_adapters
+from toolgate.setup.models import DiscoveredMCP
 
 
-# ── strip_mcp.node_discovery (Python-side registry) ───────────────────────────
+# ── toolgate.node_discovery (Python-side registry) ───────────────────────────
 
 
 def test_discover_empty_without_package_json(tmp_path: Path) -> None:
@@ -71,7 +71,7 @@ def test_custom_registry(tmp_path: Path) -> None:
     assert found[0].server_id == "custom"
 
 
-# ── strip_mcp.setup.discovery ─────────────────────────────────────────────────
+# ── toolgate.setup.discovery ─────────────────────────────────────────────────
 
 
 def _write(path: Path, content: str) -> None:
@@ -129,7 +129,7 @@ def test_discover_installed_prefers_local_over_global(tmp_path: Path) -> None:
     assert "node_modules" in " ".join(playwright.args)
 
 
-# ── strip_mcp.setup.hosts ─────────────────────────────────────────────────────
+# ── toolgate.setup.hosts ─────────────────────────────────────────────────────
 
 
 def _mcp(server_id: str, *, command: str = "node", args: list[str] | None = None) -> DiscoveredMCP:
@@ -165,9 +165,9 @@ def test_merge_updates_managed_and_preserves_user_entries() -> None:
             "user_server": {"command": "node", "args": ["/user.js"]},
             "playwright": {"command": "node", "args": ["/old-playwright.js"]},
         },
-        "_stripMcpManaged": {
+        "_toolgateManaged": {
             "version": 1,
-            "source": "strip-mcp",
+            "source": "toolgate",
             "app": "claude",
             "serverIds": ["playwright"],
         },
@@ -180,7 +180,7 @@ def test_merge_updates_managed_and_preserves_user_entries() -> None:
     assert out.removed == []
     assert out.config["mcpServers"]["user_server"]["args"] == ["/user.js"]
     assert out.config["mcpServers"]["playwright"]["args"] == ["/new-playwright.js"]
-    assert out.config["_stripMcpManaged"]["serverIds"] == ["playwright", "wiki"]
+    assert out.config["_toolgateManaged"]["serverIds"] == ["playwright", "wiki"]
 
 
 def test_merge_removes_deselected_managed() -> None:
@@ -191,9 +191,9 @@ def test_merge_removes_deselected_managed() -> None:
             "playwright": {"command": "node", "args": ["/p.js"]},
             "wiki": {"command": "node", "args": ["/w.js"]},
         },
-        "_stripMcpManaged": {
+        "_toolgateManaged": {
             "version": 1,
-            "source": "strip-mcp",
+            "source": "toolgate",
             "app": "claude",
             "serverIds": ["playwright", "wiki"],
         },
@@ -203,7 +203,7 @@ def test_merge_removes_deselected_managed() -> None:
 
     assert out.removed == ["wiki"]
     assert "wiki" not in out.config["mcpServers"]
-    assert out.config["_stripMcpManaged"]["serverIds"] == ["playwright"]
+    assert out.config["_toolgateManaged"]["serverIds"] == ["playwright"]
 
 
 def test_merge_reports_conflict_for_user_managed_entry() -> None:
@@ -215,7 +215,7 @@ def test_merge_reports_conflict_for_user_managed_entry() -> None:
         }
     }
 
-    out = adapter.merge(original, [_mcp("playwright", args=["/strip-owned.js"])])
+    out = adapter.merge(original, [_mcp("playwright", args=["/toolgate-owned.js"])])
 
     assert out.added == []
     assert out.updated == []
@@ -241,7 +241,7 @@ def test_write_creates_backup_and_atomic_file(tmp_path: Path) -> None:
     assert "wiki" in loaded["mcpServers"]
 
 
-# ── strip_mcp CLI (setup) ─────────────────────────────────────────────────────
+# ── toolgate CLI (setup) ─────────────────────────────────────────────────────
 
 
 def _make_local_playwright_project(root: Path) -> None:
@@ -268,8 +268,8 @@ def test_setup_preview_non_interactive_does_not_write(
 
     claude_cfg = home / "claude.json"
     cursor_cfg = home / "cursor.json"
-    monkeypatch.setenv("STRIP_MCP_CLAUDE_CONFIG", str(claude_cfg))
-    monkeypatch.setenv("STRIP_MCP_CURSOR_CONFIG", str(cursor_cfg))
+    monkeypatch.setenv("TOOLGATE_CLAUDE_CONFIG", str(claude_cfg))
+    monkeypatch.setenv("TOOLGATE_CURSOR_CONFIG", str(cursor_cfg))
 
     rc = cli.main(
         [
@@ -307,8 +307,8 @@ def test_setup_apply_creates_backup_and_is_idempotent(
     _write(claude_cfg, json.dumps({"mcpServers": {}}))
     _write(cursor_cfg, json.dumps({"mcpServers": {}}))
 
-    monkeypatch.setenv("STRIP_MCP_CLAUDE_CONFIG", str(claude_cfg))
-    monkeypatch.setenv("STRIP_MCP_CURSOR_CONFIG", str(cursor_cfg))
+    monkeypatch.setenv("TOOLGATE_CLAUDE_CONFIG", str(claude_cfg))
+    monkeypatch.setenv("TOOLGATE_CURSOR_CONFIG", str(cursor_cfg))
 
     argv = [
         "setup",
@@ -358,8 +358,8 @@ def test_setup_apply_partial_failure_continues_other_app(
     bad_cursor_target = home / "cursor-dir"
     bad_cursor_target.mkdir(parents=True, exist_ok=True)
 
-    monkeypatch.setenv("STRIP_MCP_CLAUDE_CONFIG", str(claude_cfg))
-    monkeypatch.setenv("STRIP_MCP_CURSOR_CONFIG", str(bad_cursor_target))
+    monkeypatch.setenv("TOOLGATE_CLAUDE_CONFIG", str(claude_cfg))
+    monkeypatch.setenv("TOOLGATE_CURSOR_CONFIG", str(bad_cursor_target))
 
     rc = cli.main(
         [
@@ -391,8 +391,8 @@ def test_setup_non_interactive_unknown_select_is_error(
     home = tmp_path / "home"
     _make_local_playwright_project(project)
 
-    monkeypatch.setenv("STRIP_MCP_CLAUDE_CONFIG", str(home / "claude.json"))
-    monkeypatch.setenv("STRIP_MCP_CURSOR_CONFIG", str(home / "cursor.json"))
+    monkeypatch.setenv("TOOLGATE_CLAUDE_CONFIG", str(home / "claude.json"))
+    monkeypatch.setenv("TOOLGATE_CURSOR_CONFIG", str(home / "cursor.json"))
 
     rc = cli.main(
         [
@@ -427,7 +427,7 @@ def test_setup_json_includes_planning_errors(
 
     bad_target = home / "claude-dir"
     bad_target.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("STRIP_MCP_CLAUDE_CONFIG", str(bad_target))
+    monkeypatch.setenv("TOOLGATE_CLAUDE_CONFIG", str(bad_target))
 
     rc = cli.main(
         [
@@ -451,7 +451,7 @@ def test_setup_json_includes_planning_errors(
     assert payload["planning_errors"]
 
 
-def test_install_ignores_existing_strip_proxy_entry(
+def test_install_ignores_existing_toolgate_proxy_entry(
     tmp_path: Path,
 ) -> None:
     settings_path = tmp_path / "settings.json"
@@ -460,8 +460,8 @@ def test_install_ignores_existing_strip_proxy_entry(
         json.dumps(
             {
                 "mcpServers": {
-                    "strip": {
-                        "command": "/usr/local/bin/strip-mcp",
+                    "toolgate": {
+                        "command": "/usr/local/bin/toolgate",
                         "args": ["proxy", "--config", str(proxy_path)],
                     },
                     "wiki": {

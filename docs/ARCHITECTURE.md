@@ -1,6 +1,6 @@
-# strip-mcp — architecture and design
+# toolgate — architecture and design
 
-This document describes why **strip-mcp** exists, what it does at a high level, how the pieces fit together, and where the project may go next. For how to run tests and benchmarks, see [BENCHMARKS_AND_TESTS.md](./BENCHMARKS_AND_TESTS.md).
+This document describes why **toolgate** exists, what it does at a high level, how the pieces fit together, and where the project may go next. For how to run tests and benchmarks, see [BENCHMARKS_AND_TESTS.md](./BENCHMARKS_AND_TESTS.md).
 
 ---
 
@@ -12,7 +12,7 @@ Agents that use the [Model Context Protocol (MCP)](https://modelcontextprotocol.
 
 ### 1.2 Idea
 
-**strip-mcp** is a **Python middleware library** that sits between your agent and one or more MCP servers. It presents tool information in **stages**:
+**toolgate** is a **Python middleware library** that sits between your agent and one or more MCP servers. It presents tool information in **stages**:
 
 | Stage | What the agent gets | Typical use |
 |-------|---------------------|-------------|
@@ -25,7 +25,7 @@ The default mode (**`staged=True`**) keeps Stage 1 small by **omitting** full `i
 ### 1.3 Non-goals
 
 - **Not** a replacement for the MCP protocol or a hosted MCP gateway.
-- **Not** opinionated about how the LLM formats prompts; strip-mcp provides **data** (`ToolBrief`, `ToolSchema`, `ToolResult`) and **string helpers** (e.g. `list_tools_text()`).
+- **Not** opinionated about how the LLM formats prompts; toolgate provides **data** (`ToolBrief`, `ToolSchema`, `ToolResult`) and **string helpers** (e.g. `list_tools_text()`).
 - **Not** required to use Node.js; optional npm tooling exists for **examples** and **discovery** of locally installed npm MCP packages.
 
 ---
@@ -38,8 +38,8 @@ flowchart TB
         A[Agent / orchestrator]
     end
 
-    subgraph StripMCP["strip-mcp (Python)"]
-        SM[StripMCP]
+    subgraph ToolGate["toolgate (Python)"]
+        SM[ToolGate]
         TR[ToolRegistry]
         SM --> TR
         SM --> SH1[ServerHandle]
@@ -62,7 +62,7 @@ flowchart TB
     A --> SM
 ```
 
-- **`StripMCP`**: Orchestrates lifecycle, **server registration**, **Stage 1–3** APIs, and **refresh** after tool list changes.
+- **`ToolGate`**: Orchestrates lifecycle, **server registration**, **Stage 1–3** APIs, and **refresh** after tool list changes.
 - **`ServerHandle`**: One MCP server **process or URL**, caches **raw tool list** and **schemas**, builds **`ToolBrief`** instances, executes **calls**.
 - **`ToolRegistry`**: Global **namespaced tool name → `server_id`** map with **collision detection** and **fuzzy suggestions** on missing names.
 - **`MCPConnection`**: Transport abstraction — **`StdioConnection`** (subprocess JSON-RPC) and **`HTTPConnection`** (remote) implement the same contract.
@@ -76,7 +76,7 @@ flowchart TB
 ```mermaid
 flowchart LR
     C[MCP Client / Agent]
-    P[strip-mcp Proxy]
+    P[toolgate Proxy]
     S1[Upstream MCP Server A]
     S2[Upstream MCP Server B]
 
@@ -84,9 +84,9 @@ flowchart LR
     C -- tools/list --> P
     P -- initialize + tools/list --> S1
     P -- initialize + tools/list --> S2
-    P -- tools/list with stub schemas + __strip__get_schema --> C
+    P -- tools/list with stub schemas + __toolgate__get_schema --> C
 
-    C -- tools/call __strip__get_schema --> P
+    C -- tools/call __toolgate__get_schema --> P
     P -- schema lookup from cached upstream tools/list --> C
 
     C -- tools/call namespaced_tool --> P
@@ -97,13 +97,13 @@ flowchart LR
 
 ### 3.2 Pipeline steps
 
-1. Client initializes `strip-mcp` proxy with JSON-RPC `initialize`.
+1. Client initializes `toolgate` proxy with JSON-RPC `initialize`.
 2. Proxy initializes upstream servers and caches their `tools/list`.
-3. Client requests `tools/list`; proxy returns namespaced tools with stub `inputSchema` plus `__strip__get_schema`.
-4. Client requests full schema only for selected tools via `tools/call` on `__strip__get_schema`.
+3. Client requests `tools/list`; proxy returns namespaced tools with stub `inputSchema` plus `__toolgate__get_schema`.
+4. Client requests full schema only for selected tools via `tools/call` on `__toolgate__get_schema`.
 5. Client executes real tool with `tools/call`; proxy routes by namespaced tool name and returns upstream result.
 
-### 3.3 Raw JSON-RPC examples: native MCP vs strip-mcp
+### 3.3 Raw JSON-RPC examples: native MCP vs toolgate
 
 #### A) `tools/list` from a native MCP server (full schema upfront)
 
@@ -133,7 +133,7 @@ flowchart LR
 }
 ```
 
-#### B) `tools/list` from strip-mcp proxy (brief + stub schema)
+#### B) `tools/list` from toolgate proxy (brief + stub schema)
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
@@ -147,7 +147,7 @@ flowchart LR
     "tools": [
       {
         "name": "playwright__browser_navigate",
-        "description": "Navigate to URL (call __strip__get_schema to get parameters before use)",
+        "description": "Navigate to URL (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -155,7 +155,7 @@ flowchart LR
         }
       },
       {
-        "name": "__strip__get_schema",
+        "name": "__toolgate__get_schema",
         "description": "Returns the full parameter schema for any upstream tool.",
         "inputSchema": {
           "type": "object",
@@ -170,7 +170,7 @@ flowchart LR
 }
 ```
 
-#### C) Stage 2 schema fetch via strip-mcp
+#### C) Stage 2 schema fetch via toolgate
 
 ```json
 {
@@ -178,7 +178,7 @@ flowchart LR
   "id":3,
   "method":"tools/call",
   "params":{
-    "name":"__strip__get_schema",
+    "name":"__toolgate__get_schema",
     "arguments":{"tool_name":"playwright__browser_navigate"}
   }
 }
@@ -200,7 +200,7 @@ flowchart LR
 }
 ```
 
-#### D) Stage 3 tool execution via strip-mcp
+#### D) Stage 3 tool execution via toolgate
 
 ```json
 {
@@ -242,7 +242,7 @@ When **`namespace=True`** (default), tool names exposed to the agent are **`{ser
 
 ### 4.3 Registry and routing
 
-`ToolRegistry` registers every namespaced name after **`StripMCP.start()`** loads tools. **`call(tool_name, …)`** and **`get_schemas([...])`** **resolve** the name to a **`ServerHandle`** via the registry. **`ToolNotFoundError`** includes a **Levenshtein-based** suggestion when close matches exist; **`ToolCollisionError`** is raised if registration would duplicate a name.
+`ToolRegistry` registers every namespaced name after **`ToolGate.start()`** loads tools. **`call(tool_name, …)`** and **`get_schemas([...])`** **resolve** the name to a **`ServerHandle`** via the registry. **`ToolNotFoundError`** includes a **Levenshtein-based** suggestion when close matches exist; **`ToolCollisionError`** is raised if registration would duplicate a name.
 
 ### 4.4 Lifecycle
 
@@ -252,7 +252,7 @@ When **`namespace=True`** (default), tool names exposed to the agent are **`{ser
 4. **`refresh(server_id?)`** — reload tools for one or all servers; **rebuilds** registry entries and clears Stage 1 cache.
 5. **`stop()`** — closes connections.
 
-**`SyncStripMCP`** wraps the async API with a **dedicated event loop** for synchronous callers.
+**`SyncToolGate`** wraps the async API with a **dedicated event loop** for synchronous callers.
 
 ---
 
@@ -260,17 +260,17 @@ When **`namespace=True`** (default), tool names exposed to the agent are **`{ser
 
 | Area | Role |
 |------|------|
-| `core.py` | **`StripMCP`** orchestrator |
+| `core.py` | **`ToolGate`** orchestrator |
 | `server.py` | **`ServerHandle`** — per-server cache, briefs, `get_schema`, `call_tool` |
 | `registry.py` | **`ToolRegistry`** — name → server, collisions, suggestions |
 | `types.py` | **`ToolBrief`**, **`ToolSchema`**, **`ToolResult`** |
 | `errors.py` | Typed errors for startup, tools, timeouts, schema fetch |
 | `connection/` | **`MCPConnection`** ABC, **`stdio`**, **`http`** |
-| `sync.py` | **`SyncStripMCP`** blocking facade |
+| `sync.py` | **`SyncToolGate`** blocking facade |
 | `node_discovery.py` | Map **`package.json`** deps + **`node_modules`** to known npm MCP entrypoints; **`DEFAULT_NODE_MCP_REGISTRY`** |
-| `proxy/` | **Proxy MCP server** — wraps upstream servers, exposes stub schemas at Stage 1 + `__strip__get_schema` tool |
+| `proxy/` | **Proxy MCP server** — wraps upstream servers, exposes stub schemas at Stage 1 + `__toolgate__get_schema` tool |
 | `setup/` | macOS **CLI** to discover local/global Node MCPs and **preview/apply** Claude/Cursor MCP config |
-| `cli.py` | **`strip-mcp`** entrypoint (`setup`, `proxy` subcommands) |
+| `cli.py` | **`toolgate`** entrypoint (`setup`, `proxy` subcommands) |
 
 ---
 
@@ -285,12 +285,12 @@ Protocol version and client metadata are set in the stdio client (see `connectio
 
 ## 7. CLI and setup tooling (macOS)
 
-The **`strip-mcp setup`** command **discovers** MCP servers from:
+The **`toolgate setup`** command **discovers** MCP servers from:
 
 - project **`node_modules`** (via `discover_node_mcp_servers` and related logic), and  
 - **global npm** (`npm root -g`).
 
-It then **detects** supported apps (e.g. Claude, Cursor) and can **preview or apply** configuration changes. This is **orthogonal** to the core **`StripMCP`** library: same **discovery** building blocks, different **product** surface (developer ergonomics).
+It then **detects** supported apps (e.g. Claude, Cursor) and can **preview or apply** configuration changes. This is **orthogonal** to the core **`ToolGate`** library: same **discovery** building blocks, different **product** surface (developer ergonomics).
 
 **`--mode proxy`** is reserved for future work; v1 supports **direct** wiring only.
 
@@ -327,7 +327,7 @@ Token counts use `len(utf8_text) // 4` — a proxy, not a vendor tokenizer. Use 
 
 | Direction | Notes |
 |-----------|--------|
-| **Proxy mode** | Implemented: `strip-mcp proxy --config` runs strip-mcp as an MCP proxy in front of upstream servers (see `src/strip_mcp/proxy/`). `--mode proxy` in the setup CLI remains reserved. |
+| **Proxy mode** | Implemented: `toolgate proxy --config` runs toolgate as an MCP proxy in front of upstream servers (see `src/toolgate/proxy/`). `--mode proxy` in the setup CLI remains reserved. |
 | **HTTP transport** | `url=` path exists; maturity and parity with stdio (reconnect, auth) may grow over time. |
 | **Discovery** | Expand **`DEFAULT_NODE_MCP_REGISTRY`** or pluggable registries as the npm MCP ecosystem grows. |
 | **Docs** | This file is the **canonical** architecture overview; older design filenames may appear in git history. |

@@ -1,6 +1,6 @@
-"""Integration smoke: real @playwright/mcp via strip-mcp.
+"""Integration smoke: real @playwright/mcp via toolgate.
 
-Requires: npm install in strip-mcp/ and `npx playwright install chromium`.
+Requires: npm install in toolgate/ and `npx playwright install chromium`.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from strip_mcp import StripMCP
+from toolgate import ToolGate
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAYWRIGHT_MCP_CLI = ROOT / "node_modules" / "@playwright" / "mcp" / "cli.js"
@@ -29,7 +29,7 @@ async def main() -> None:
         )
         sys.exit(1)
 
-    async with StripMCP(default_timeout=120.0) as mcp:
+    async with ToolGate(default_timeout=120.0) as mcp:
         mcp.add_server(
             "playwright",
             command=["node", str(PLAYWRIGHT_MCP_CLI)],

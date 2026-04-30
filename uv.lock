@@ -77,7 +77,7 @@ wheels = [
 ]
 
 [[package]]
-name = "strip-mcp"
+name = "toolgate"
 version = "0.1.0"
 source = { editable = "." }
 

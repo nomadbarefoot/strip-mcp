@@ -4,7 +4,7 @@ Sits between Claude Code (or any MCP client) and upstream MCP servers.
 Implements 2-stage tool delivery:
 
   Stage 1 — tools/list returns brief entries (name + description, stub schema).
-  Stage 2 — __strip__get_schema returns full inputSchema on demand.
+  Stage 2 — __toolgate__get_schema returns full inputSchema on demand.
   Stage 3 — tools/call routes to the correct upstream server.
 
 Option C (future): instead of a meta-tool, each tool description could carry
@@ -20,13 +20,14 @@ import signal
 import sys
 from typing import Any
 
-from ..core import StripMCP
-from ..errors import SchemaFetchError, StripError, ToolExecutionError, ToolNotFoundError
+from ..core import ToolGate
+from ..errors import SchemaFetchError, ToolGateError, ToolExecutionError, ToolNotFoundError
+from ..profiles import ToolProfile
 from .config import ProxyConfig
 
 logger = logging.getLogger(__name__)
 
-_META_TOOL_NAME = "__strip__get_schema"
+_META_TOOL_NAME = "__toolgate__get_schema"
 _STUB_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {},
@@ -56,9 +57,10 @@ _MAX_IN_FLIGHT_REQUESTS = 128
 class ProxyServer:
     """MCP server-side stdio proxy between an MCP client and upstream MCP servers."""
 
-    def __init__(self, config: ProxyConfig) -> None:
+    def __init__(self, config: ProxyConfig, *, profile: ToolProfile | None = None) -> None:
         self._config = config
-        self._strip = StripMCP()
+        self._profile = profile
+        self._gate = ToolGate()
         self._startup_task: asyncio.Task[None] | None = None
         self._write_lock = asyncio.Lock()
         self._in_flight_sem = asyncio.Semaphore(_MAX_IN_FLIGHT_REQUESTS)
@@ -67,7 +69,9 @@ class ProxyServer:
     async def run(self) -> None:
         """Register upstream servers, handle signals, serve stdio until EOF."""
         for server_id, entry in self._config.servers.items():
-            self._strip.add_server(
+            if self._profile and not self._server_needed(server_id):
+                continue
+            self._gate.add_server(
                 server_id,
                 command=entry.command,
                 cwd=entry.cwd,
@@ -85,7 +89,7 @@ class ProxyServer:
         finally:
             if self._startup_task and not self._startup_task.done():
                 self._startup_task.cancel()
-            await self._strip.stop()
+            await self._gate.stop()
 
     def _on_signal(self) -> None:
         self._shutdown = True
@@ -177,13 +181,13 @@ class ProxyServer:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "strip-mcp-proxy", "version": "0.1.0"},
+                "serverInfo": {"name": "toolgate-proxy", "version": "0.1.0"},
             },
         }
 
     async def _start_upstreams(self) -> None:
         try:
-            await self._strip.start()
+            await self._gate.start()
             logger.info("All upstream servers started")
         except Exception as exc:
             logger.error("Upstream startup failed: %s", exc)
@@ -200,7 +204,9 @@ class ProxyServer:
             except Exception as exc:
                 logger.warning("Startup error: %s", exc)
 
-        briefs = await self._strip.list_tools()
+        briefs = await self._gate.list_tools()
+        if self._profile:
+            briefs = self._profile.filter_briefs(briefs)
         tools = [self._tool_from_brief(brief) for brief in briefs]
         tools.append(_META_TOOL_DEF)
         return {"jsonrpc": "2.0", "id": rpc_id, "result": {"tools": tools}}
@@ -213,16 +219,18 @@ class ProxyServer:
 
         if tool_name == _META_TOOL_NAME:
             return await self._handle_get_schema(rpc_id, arguments)
+        if not self._tool_allowed(tool_name):
+            return self._make_error(rpc_id, -32602, f"Tool not available in profile: {tool_name}")
 
         try:
-            result = await self._strip.call(tool_name, arguments)
+            result = await self._gate.call(tool_name, arguments)
         except ToolNotFoundError as exc:
             return self._make_error(rpc_id, -32602, str(exc))
         except ToolExecutionError as exc:
             # Tool ran but returned isError — valid MCP result, not a protocol error
             content = exc.mcp_error if isinstance(exc.mcp_error, list) else [{"type": "text", "text": str(exc.mcp_error)}]
             return self._make_tool_result(rpc_id, content, is_error=True)
-        except StripError as exc:
+        except ToolGateError as exc:
             return self._make_error(rpc_id, -32603, str(exc))
 
         return self._make_tool_result(rpc_id, result.content, is_error=result.is_error)
@@ -234,9 +242,15 @@ class ProxyServer:
         if not isinstance(raw_tool_name, str) or not raw_tool_name:
             return self._make_error(rpc_id, -32602, "tool_name is required")
         tool_name = raw_tool_name
+        if not self._tool_allowed(tool_name):
+            return self._make_tool_result(
+                rpc_id,
+                [{"type": "text", "text": f"Error: Tool not available in profile: {tool_name}"}],
+                is_error=True,
+            )
 
         try:
-            schemas = await self._strip.get_schemas([tool_name])
+            schemas = await self._gate.get_schemas([tool_name])
             schema_text = json.dumps(schemas[0].input_schema, indent=2)
             return self._make_tool_result(rpc_id, [{"type": "text", "text": schema_text}])
         except (ToolNotFoundError, SchemaFetchError) as exc:
@@ -313,3 +327,13 @@ class ProxyServer:
             "id": rpc_id,
             "error": {"code": code, "message": message},
         }
+
+    def _tool_allowed(self, tool_name: str) -> bool:
+        if self._profile is None:
+            return True
+        server_id = tool_name.split("__", 1)[0] if "__" in tool_name else ""
+        return self._profile.allows(tool_name, server_id)
+
+    def _server_needed(self, server_id: str) -> bool:
+        assert self._profile is not None
+        return self._profile.needs_server(server_id)

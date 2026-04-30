@@ -9,7 +9,7 @@ Servers (local npm):
   - @modelcontextprotocol/server-memory
 
 Run from repo root:
-  cd strip-mcp && .venv/bin/python examples/multi_mcp_agent_benchmark.py
+  cd toolgate && .venv/bin/python examples/multi_mcp_agent_benchmark.py
 """
 
 from __future__ import annotations
@@ -25,9 +25,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from strip_mcp import StripMCP
-from strip_mcp.errors import StripError
-from strip_mcp.node_discovery import discover_node_mcp_servers
+from toolgate import ToolGate
+from toolgate.errors import ToolGateError
+from toolgate.node_discovery import discover_node_mcp_servers
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -63,7 +63,7 @@ class BenchmarkReport:
     token_note: str = "approx_tokens = len(text)//4; not a real tokenizer"
 
 
-async def build_full_schemas_json(mcp: StripMCP, tools: list) -> str:
+async def build_full_schemas_json(mcp: ToolGate, tools: list) -> str:
     payload = []
     for b in tools:
         sch = (await mcp.get_schemas([b.name]))[0]
@@ -100,7 +100,7 @@ async def run() -> BenchmarkReport:
     failure_summary: list[str] = []
 
     t0 = time.perf_counter()
-    async with StripMCP(default_timeout=120.0) as mcp:
+    async with ToolGate(default_timeout=120.0) as mcp:
         for d in discovered:
             mcp.add_server(d.server_id, command=d.command)
 
@@ -204,7 +204,7 @@ async def run() -> BenchmarkReport:
                         }
                     )
                     tr.steps.append(step)
-            except StripError as e:
+            except ToolGateError as e:
                 tr.ok = False
                 tr.error = f"{type(e).__name__}: {e}"
                 failure_summary.append(f"{tid}: {tr.error}")
@@ -293,7 +293,7 @@ def main() -> None:
         for f in report.failure_summary:
             print(f"  - {f}")
     else:
-        print("No hard failures (StripError) recorded.")
+        print("No hard failures (ToolGateError) recorded.")
 
     print(f"\nWrote {out_path}")
 

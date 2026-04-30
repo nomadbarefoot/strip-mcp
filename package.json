@@ -1,5 +1,5 @@
 {
-  "name": "strip-mcp-playwright-dev",
+  "name": "toolgate-playwright-dev",
   "private": true,
   "description": "Local @playwright/mcp for integration tests",
   "devDependencies": {

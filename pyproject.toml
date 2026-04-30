@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "strip-mcp"
+name = "toolgate"
 version = "0.1.0"
 description = "MCP middleware that delivers tool info in stages — names first, schemas on demand"
 readme = "README.md"
@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
-strip-mcp = "strip_mcp.cli:main"
+toolgate = "toolgate.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -25,4 +25,4 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/strip_mcp"]
+packages = ["src/toolgate"]

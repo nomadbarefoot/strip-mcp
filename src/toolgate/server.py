@@ -125,6 +125,11 @@ class ServerHandle:
     def healthy(self) -> bool:
         return self._healthy
 
+    @property
+    def raw_tools(self) -> list[dict[str, Any]]:
+        """Return cached upstream tool definitions."""
+        return list(self._raw_tools)
+
     # ── helpers ────────────────────────────────────────────────────────────
 
     def _namespaced(self, raw_name: str) -> str:

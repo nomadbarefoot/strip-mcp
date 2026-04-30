@@ -1,10 +1,10 @@
-# strip-mcp
+# toolgate
 
 Python middleware for the [Model Context Protocol](https://modelcontextprotocol.io): staged tool discovery (names and descriptions first, full JSON schemas on demand) to cut token overhead from large MCP tool registries.
 
 ## Why
 
-Agents using many MCP servers receive full JSON schemas for every tool on `tools/list`. Most of that schema payload is never used — the model only needs to know what tools exist at planning time, and full schemas only when building arguments. strip-mcp serves tool information in three stages:
+Agents using many MCP servers receive full JSON schemas for every tool on `tools/list`. Most of that schema payload is never used — the model only needs to know what tools exist at planning time, and full schemas only when building arguments. toolgate serves tool information in three stages:
 
 | Stage | What the agent gets | When |
 |-------|---------------------|------|
@@ -18,7 +18,7 @@ Agents using many MCP servers receive full JSON schemas for every tool on `tools
 
 | Path | Contents |
 |------|----------|
-| `src/strip_mcp/` | Library, transports (`connection/`), proxy server (`proxy/`), CLI (`cli.py`), macOS setup helpers (`setup/`) |
+| `src/toolgate/` | Library, transports (`connection/`), proxy server (`proxy/`), CLI (`cli.py`), macOS setup helpers (`setup/`) |
 | `tests/` | Pytest suite |
 | `examples/` | Benchmarks and runnable scripts |
 | `docs/` | [Architecture](docs/ARCHITECTURE.md), [benchmarks/tests](docs/BENCHMARKS_AND_TESTS.md) |
@@ -43,9 +43,9 @@ npx playwright install chromium
 ## Usage (library)
 
 ```python
-from strip_mcp import StripMCP
+from toolgate import ToolGate
 
-async with StripMCP() as mcp:
+async with ToolGate() as mcp:
     mcp.add_server("playwright", command=["node", "node_modules/@playwright/mcp/cli.js"])
     await mcp.start()
 
@@ -61,29 +61,51 @@ async with StripMCP() as mcp:
 
 ## Proxy server
 
-strip-mcp ships a proxy MCP server that wraps upstream MCP servers and exposes the 3-stage API as a standard MCP interface. Configure via JSON:
+toolgate ships a proxy MCP server that wraps upstream MCP servers and exposes the 3-stage API as a standard MCP interface. Configure via JSON:
 
 ```bash
-strip-mcp proxy --config path/to/config.json
+toolgate proxy --config path/to/config.json
 ```
 
-The proxy exposes all upstream tools with stub schemas at `tools/list`, plus a `__strip__get_schema` tool that returns the real `inputSchema` on demand. Any agent that supports MCP tool use can use it without code changes.
+The proxy exposes all upstream tools with stub schemas at `tools/list`, plus a `__toolgate__get_schema` tool that returns the real `inputSchema` on demand. Any agent that supports MCP tool use can use it without code changes.
+
+Profiles can expose curated subsets:
+
+```bash
+toolgate proxy --config ~/.toolgate/config.json --profile browser
+```
+
+## Local tool facade
+
+For local agents and custom implementations that do not need MCP as their
+primary interface, toolgate also provides a SQLite-backed inventory and
+Unix-style JSON CLI:
+
+```bash
+toolgate collect --config ~/.toolgate/config.json
+toolgate tools list --profile browser --format text
+toolgate schema playwright__browser_navigate --profile browser
+toolgate daemon run --config ~/.toolgate/config.json --profile browser
+toolgate call playwright__browser_navigate --json '{"url":"https://example.com"}'
+```
+
+See [docs/LOCAL_TOOL_FACADE.md](docs/LOCAL_TOOL_FACADE.md).
 
 ## Setup CLI (macOS v1)
 
-`strip-mcp setup` discovers installed Node MCP servers and writes them into Claude/Cursor configs.
+`toolgate setup` discovers installed Node MCP servers and writes them into Claude/Cursor configs.
 
 ```bash
-strip-mcp setup                          # preview
-strip-mcp setup --apps claude,cursor     # filter apps
-strip-mcp setup --non-interactive --select playwright,wiki
-strip-mcp setup --apply                  # write configs
-strip-mcp setup --json                   # machine-readable output
+toolgate setup                          # preview
+toolgate setup --apps claude,cursor     # filter apps
+toolgate setup --non-interactive --select playwright,wiki
+toolgate setup --apply                  # write configs
+toolgate setup --json                   # machine-readable output
 ```
 
 Config paths can be overridden for automation:
-- `STRIP_MCP_CLAUDE_CONFIG=/path/to/claude-config.json`
-- `STRIP_MCP_CURSOR_CONFIG=/path/to/cursor-config.json`
+- `TOOLGATE_CLAUDE_CONFIG=/path/to/claude-config.json`
+- `TOOLGATE_CURSOR_CONFIG=/path/to/cursor-config.json`
 
 ## Node MCP auto-discovery
 

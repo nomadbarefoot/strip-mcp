@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from strip_mcp import StripMCP
+from toolgate import ToolGate
 
 MOCK = [sys.executable, str(Path(__file__).parent.parent / "tests" / "mock_mcp_server.py")]
 
@@ -24,8 +24,8 @@ def _approx_tokens(text: str) -> int:
 
 
 async def main() -> None:
-    mcp_staged = StripMCP()
-    mcp_full = StripMCP()
+    mcp_staged = ToolGate()
+    mcp_full = ToolGate()
 
     mcp_staged.add_server("demo", command=MOCK + ["--tools", "50"], staged=True)
     mcp_full.add_server("demo", command=MOCK + ["--tools", "50"], staged=False)

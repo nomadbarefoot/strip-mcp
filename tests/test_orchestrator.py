@@ -1,4 +1,4 @@
-"""StripMCP orchestrator, registry, and error types."""
+"""ToolGate orchestrator, registry, and error types."""
 
 from __future__ import annotations
 
@@ -7,18 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from strip_mcp import StripMCP
-from strip_mcp.errors import (
+from toolgate import ToolGate
+from toolgate.errors import (
     SchemaFetchError,
     ServerCrashedError,
     ServerStartError,
-    StripError,
+    ToolGateError,
     ToolCollisionError,
     ToolExecutionError,
     ToolNotFoundError,
     ToolTimeoutError,
 )
-from strip_mcp.registry import ToolRegistry
+from toolgate.registry import ToolRegistry
 
 MOCK = [sys.executable, str(Path(__file__).parent / "mock_mcp_server.py")]
 MOCK_5 = MOCK + ["--tools", "5"]
@@ -37,7 +37,7 @@ def test_error_hierarchy() -> None:
         ToolTimeoutError,
         SchemaFetchError,
     ):
-        assert issubclass(cls, StripError)
+        assert issubclass(cls, ToolGateError)
 
 
 def test_tool_not_found_message_with_suggestion() -> None:
@@ -109,12 +109,12 @@ def test_all_names() -> None:
     assert set(reg.all_names()) == {"a", "b"}
 
 
-# ── StripMCP ─────────────────────────────────────────────────────────────────
+# ── ToolGate ─────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_full_three_stage_flow() -> None:
-    async with StripMCP() as mcp:
+    async with ToolGate() as mcp:
         mcp.add_server("s1", command=MOCK_5)
         await mcp.start()
 
@@ -134,7 +134,7 @@ async def test_full_three_stage_flow() -> None:
 
 @pytest.mark.asyncio
 async def test_list_tools_cached() -> None:
-    async with StripMCP() as mcp:
+    async with ToolGate() as mcp:
         mcp.add_server("s1", command=MOCK_5)
         await mcp.start()
 
@@ -145,7 +145,7 @@ async def test_list_tools_cached() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_clears_cache() -> None:
-    async with StripMCP() as mcp:
+    async with ToolGate() as mcp:
         mcp.add_server("s1", command=MOCK_5)
         await mcp.start()
 
@@ -157,7 +157,7 @@ async def test_refresh_clears_cache() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_single_server() -> None:
-    async with StripMCP() as mcp:
+    async with ToolGate() as mcp:
         mcp.add_server("s1", command=MOCK_5)
         mcp.add_server("s2", command=MOCK_5)
         await mcp.start()
@@ -169,7 +169,7 @@ async def test_refresh_single_server() -> None:
 
 @pytest.mark.asyncio
 async def test_multiple_servers_namespaced() -> None:
-    async with StripMCP() as mcp:
+    async with ToolGate() as mcp:
         mcp.add_server("alpha", command=MOCK_5)
         mcp.add_server("beta", command=MOCK_5)
         await mcp.start()
@@ -183,7 +183,7 @@ async def test_multiple_servers_namespaced() -> None:
 
 @pytest.mark.asyncio
 async def test_staged_false_in_list_tools() -> None:
-    async with StripMCP() as mcp:
+    async with ToolGate() as mcp:
         mcp.add_server("s1", command=MOCK_5, staged=False)
         await mcp.start()
 
@@ -193,7 +193,7 @@ async def test_staged_false_in_list_tools() -> None:
 
 @pytest.mark.asyncio
 async def test_tool_not_found_raises() -> None:
-    async with StripMCP() as mcp:
+    async with ToolGate() as mcp:
         mcp.add_server("s1", command=MOCK_5)
         await mcp.start()
 
@@ -203,7 +203,7 @@ async def test_tool_not_found_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_direct_execution_no_params() -> None:
-    async with StripMCP() as mcp:
+    async with ToolGate() as mcp:
         mcp.add_server("s1", command=MOCK_5)
         await mcp.start()
 
@@ -215,7 +215,7 @@ async def test_direct_execution_no_params() -> None:
 
 @pytest.mark.asyncio
 async def test_namespace_false_collision_raises() -> None:
-    async with StripMCP() as mcp:
+    async with ToolGate() as mcp:
         mcp.add_server("s1", command=MOCK_5, namespace=False)
         mcp.add_server("s2", command=MOCK_5, namespace=False)
 
@@ -244,7 +244,7 @@ for line in sys.stdin:
         print(json.dumps({"jsonrpc":"2.0","id":rid,"result":{"content":[{"type":"text","text":"ok"}],"isError":False}}), flush=True)
 """,
     ]
-    async with StripMCP() as mcp:
+    async with ToolGate() as mcp:
         mcp.add_server("s1", command=mock_other, namespace=False)
         await mcp.start()
         tools = await mcp.list_tools()
@@ -253,7 +253,7 @@ for line in sys.stdin:
 
 @pytest.mark.asyncio
 async def test_list_tools_text() -> None:
-    async with StripMCP() as mcp:
+    async with ToolGate() as mcp:
         mcp.add_server("s1", command=MOCK_5)
         await mcp.start()
 
@@ -265,7 +265,7 @@ async def test_list_tools_text() -> None:
 
 @pytest.mark.asyncio
 async def test_restart_after_stop_works() -> None:
-    mcp = StripMCP()
+    mcp = ToolGate()
     mcp.add_server("s1", command=MOCK_5)
 
     await mcp.start()
@@ -279,7 +279,7 @@ async def test_restart_after_stop_works() -> None:
 
 @pytest.mark.asyncio
 async def test_failed_start_rolls_back_running_servers() -> None:
-    mcp = StripMCP()
+    mcp = ToolGate()
     mcp.add_server("ok", command=MOCK_5)
     mcp.add_server("bad", command=["nonexistent_binary_xyz"])
 
