@@ -1,4 +1,4 @@
-"""Public data types for strip-mcp."""
+"""Public data types for toolgate."""
 
 from dataclasses import dataclass, field
 from typing import Any

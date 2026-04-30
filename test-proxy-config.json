@@ -4,7 +4,7 @@
     "playwright": {
       "command": [
         "node",
-        "/Users/ayan/Documents/LM_Projects/strip-mcp/node_modules/@playwright/mcp/cli.js"
+        "/Users/ayan/Documents/LM_Projects/toolgate/node_modules/@playwright/mcp/cli.js"
       ]
     }
   }

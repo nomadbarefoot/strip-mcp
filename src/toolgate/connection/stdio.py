@@ -15,7 +15,7 @@ from .base import MCPConnection
 logger = logging.getLogger(__name__)
 
 _PROTOCOL_VERSION = "2024-11-05"
-_CLIENT_INFO = {"name": "strip-mcp", "version": "0.1.0"}
+_CLIENT_INFO = {"name": "toolgate", "version": "0.1.0"}
 _STARTUP_TIMEOUT = 10.0  # seconds to wait for initialize response
 # Default asyncio line iteration caps ~64 KiB per line; MCP tool results (e.g. long Wikipedia articles) exceed that.
 _MAX_JSON_LINE_BYTES = 64 * 1024 * 1024
@@ -63,10 +63,10 @@ class StdioConnection(MCPConnection):
             ) from exc
 
         self._reader_task = asyncio.create_task(
-            self._read_loop(), name=f"strip-reader-{self._server_id}"
+            self._read_loop(), name=f"toolgate-reader-{self._server_id}"
         )
         self._stderr_task = asyncio.create_task(
-            self._stderr_loop(), name=f"strip-stderr-{self._server_id}"
+            self._stderr_loop(), name=f"toolgate-stderr-{self._server_id}"
         )
 
         try:

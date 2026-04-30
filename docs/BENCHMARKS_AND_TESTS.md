@@ -1,6 +1,6 @@
 # Benchmarks and Tests
 
-Reference for strip-mcp performance benchmarks and the pytest suite. Generated JSON under `examples/` is gitignored unless force-added.
+Reference for toolgate performance benchmarks and the pytest suite. Generated JSON under `examples/` is gitignored unless force-added.
 
 ---
 
@@ -27,10 +27,10 @@ pip install -e ".[dev]"
 npm install && npx playwright install chromium
 
 # Single run, verbose summary
-python examples/strip_vs_full_benchmark.py --iterations 1 -v
+python examples/toolgate_vs_full_benchmark.py --iterations 1 -v
 
 # 8-iteration aggregate (one full profile cycle)
-python examples/strip_vs_full_benchmark.py --iterations 8 --output examples/strip_benchmark_aggregate_report.json
+python examples/toolgate_vs_full_benchmark.py --iterations 8 --output examples/toolgate_benchmark_aggregate_report.json
 
 # Legacy single-pass multi-MCP script
 python examples/multi_mcp_agent_benchmark.py
@@ -44,7 +44,7 @@ Servers required: `@playwright/mcp`, `wikipedia-mcp`, `@modelcontextprotocol/ser
 
 | Script | Role | Output |
 |--------|------|--------|
-| `strip_vs_full_benchmark.py` | Staged vs `staged=False`; workflow profiles; token + timing metrics | `strip_vs_full_benchmark_report.json` or `-o` path |
+| `toolgate_vs_full_benchmark.py` | Staged vs `staged=False`; workflow profiles; token + timing metrics | `toolgate_vs_full_benchmark_report.json` or `-o` path |
 | `multi_mcp_agent_benchmark.py` | Single-pass scripted tasks across 3 servers | `multi_mcp_benchmark_report.json` |
 | `benchmark_tokens.py` | 50-tool mock: Stage 1 vs full-schema token proxy | stdout only |
 | `playwright_smoke.py`, `basic_usage.py` | Manual smoke tests | — |
@@ -53,7 +53,7 @@ Servers required: `@playwright/mcp`, `wikipedia-mcp`, `@modelcontextprotocol/ser
 
 ## 4. Aggregate benchmark (8 iterations, 2026-04-06)
 
-`python examples/strip_vs_full_benchmark.py -n 8 -o examples/strip_benchmark_aggregate_report.json`
+`python examples/toolgate_vs_full_benchmark.py -n 8 -o examples/toolgate_benchmark_aggregate_report.json`
 
 | Field | Value |
 |-------|-------|
@@ -65,9 +65,9 @@ Servers required: `@playwright/mcp`, `wikipedia-mcp`, `@modelcontextprotocol/ser
 
 | Metric | Min | Max | Mean | Stdev |
 |--------|-----|-----|------|-------|
-| `strip_startup_ms` | 396.8 | 438.2 | 410.6 | 14.1 |
+| `staged_startup_ms` | 396.8 | 438.2 | 410.6 | 14.1 |
 | `full_startup_ms` | 379.1 | 409.9 | 398.9 | 9.6 |
-| `strip_sum_task_ms` | 8.0 | 9,994.9 | 4,855.4 | 3,402.0 |
+| `staged_sum_task_ms` | 8.0 | 9,994.9 | 4,855.4 | 3,402.0 |
 | `full_sum_task_ms` | 7.3 | 7,941.8 | 4,151.8 | 2,764.0 |
 | `iteration_wall_ms` | 832.5 | 18,839.6 | 9,906.7 | 6,171.0 |
 
@@ -77,10 +77,10 @@ Wall time is dominated by Wikipedia and Playwright I/O — not a clean proxy for
 
 | Metric | Min | Max | Mean | Stdev |
 |--------|-----|-----|------|-------|
-| `approx_tokens_saved_strip_vs_naive_upfront` | 5,121 | 5,496 | 5,327.8 | 158.5 |
-| `approx_ratio_naive_upfront_to_strip_workflow` | 5.19 | 7.49 | 6.38 | 0.99 |
+| `approx_tokens_saved_staged_vs_naive_upfront` | 5,121 | 5,496 | 5,327.8 | 158.5 |
+| `approx_ratio_naive_upfront_to_staged_workflow` | 5.19 | 7.49 | 6.38 | 0.99 |
 
-**Fixed catalog size (any iteration):** Stage 1 strip **717** / full **762** tokens; naive full-registry blob **6,343** tokens.
+**Fixed catalog size (any iteration):** Stage 1 staged **717** / full **762** tokens; naive full-registry blob **6,343** tokens.
 
 ### 4.3 Per-iteration breakdown
 
@@ -99,15 +99,15 @@ Wall time is dominated by Wikipedia and Playwright I/O — not a clean proxy for
 
 ## 5. Live in-session benchmark (2026-04-07)
 
-Verified live via the strip-mcp proxy MCP server (Claude Code session, `strip` server connected). Same 3-stage flow, single `low_tool_flash` iteration against a running proxy.
+Verified live via the toolgate proxy MCP server (Claude Code session, `toolgate` server connected). Same 3-stage flow, single `low_tool_flash` iteration against a running proxy.
 
 | Stage | Call | Result |
 |-------|------|--------|
 | 1 — list | Deferred tool list | 22 tools, stub schemas |
-| 2 — schema | `__strip__get_schema(playwright__browser_navigate)` | Real `inputSchema` returned |
+| 2 — schema | `__toolgate__get_schema(playwright__browser_navigate)` | Real `inputSchema` returned |
 | 3 — execute | `playwright__browser_navigate(https://example.com)` | Title "Example Domain" |
 
-Token reading confirmed against script output: **7.37× ratio** on `low_tool_flash` (861 strip vs 6,343 naive). Schema fetch overhead: **~0 ms** (in-process cache after first call).
+Token reading confirmed against script output: **7.37× ratio** on `low_tool_flash` (861 staged vs 6,343 naive). Schema fetch overhead: **~0 ms** (in-process cache after first call).
 
 ---
 
@@ -116,7 +116,7 @@ Token reading confirmed against script output: **7.37× ratio** on `low_tool_fla
 | Client pattern | Benchmark proxy |
 |----------------|-----------------|
 | **Naive:** all tools' name + description + full `inputSchema` JSON upfront | `naive_full_registry_prompt_approx_tokens` |
-| **Staged:** compact Stage 1 list + one JSON Schema per **distinct** tool invoked | `strip_staged_workflow_prompt_approx_tokens` |
+| **Staged:** compact Stage 1 list + one JSON Schema per **distinct** tool invoked | `staged_workflow_prompt_approx_tokens` |
 | **Upper bound** if schema is repeated on every call (no caching) | `workflow_catalog_plus_schema_on_every_tool_call_approx_tokens` |
 
 Full field definitions live in `workflow_interpretation` in the JSON report.
@@ -147,7 +147,7 @@ Iteration *n* uses profile index `(n − 1) mod 8`. JSON: `per_iteration[].workf
 | **Default stdout/stderr** | Without `-v`, Python stdout/stderr go to `os.devnull` during the run |
 | **Verbose** | `-v` / `--verbose` prints a short summary and still writes the JSON |
 | **Chromium** | `--headless --isolated` on Playwright MCP; `PLAYWRIGHT_MCP_HEADLESS=1` set in-process |
-| **Logging** | `strip_mcp` and `asyncio` loggers at CRITICAL for the benchmark process |
+| **Logging** | `toolgate` and `asyncio` loggers at CRITICAL for the benchmark process |
 
 ---
 
@@ -157,7 +157,7 @@ Iteration *n* uses profile index `(n − 1) mod 8`. JSON: `per_iteration[].workf
 |------|--------|
 | Meta | `generated_utc`, `config`, `workflow_interpretation`, `discovery` |
 | Summary | `summary.*` with `_agg` blocks (`min`/`max`/`mean`/`stdev`) for timings and token deltas |
-| Per iteration | `workflow_profile`, `planned_mcp_tool_calls`, `iteration_wall_ms`, `strip` / `full` mode reports, `comparison` |
+| Per iteration | `workflow_profile`, `planned_mcp_tool_calls`, `iteration_wall_ms`, `toolgate` / `full` mode reports, `comparison` |
 | Tasks | `tasks[].steps[]` → `schema_fetch_ms`, `call_ms`; `expect_failure`, `outcome_passed` |
 
 ---
@@ -176,9 +176,9 @@ pytest -q
 
 | Module | Covers |
 |--------|--------|
-| `test_orchestrator.py` | `StripMCP`, `ToolRegistry`, error types/messages |
+| `test_orchestrator.py` | `ToolGate`, `ToolRegistry`, error types/messages |
 | `test_transport.py` | `StdioConnection`, `ServerHandle` |
-| `test_setup_discovery.py` | `discover_node_mcp_servers`, `strip_mcp.setup.*`, `strip-mcp setup` CLI |
+| `test_setup_discovery.py` | `discover_node_mcp_servers`, `toolgate.setup.*`, `toolgate setup` CLI |
 
 Fixtures: `conftest.py`. Mock server: `tests/mock_mcp_server.py`.
 

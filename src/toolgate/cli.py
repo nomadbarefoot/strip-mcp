@@ -1,4 +1,4 @@
-"""Command line entrypoint for strip-mcp."""
+"""Command line entrypoint for toolgate."""
 
 from __future__ import annotations
 
@@ -30,6 +30,36 @@ def _parse_csv(raw: str | None) -> list[str]:
     if raw is None:
         return []
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _proxy_config_path(raw: str | None) -> Path:
+    from .proxy.config import DEFAULT_CONFIG_PATH
+
+    return Path(raw).expanduser().resolve() if raw else DEFAULT_CONFIG_PATH
+
+
+def _catalog_path(raw: str | None) -> Path:
+    from .catalog import DEFAULT_CATALOG_PATH
+
+    return Path(raw).expanduser().resolve() if raw else DEFAULT_CATALOG_PATH
+
+
+def _profiles_dir(raw: str | None) -> Path:
+    from .profiles import DEFAULT_PROFILES_DIR
+
+    return Path(raw).expanduser().resolve() if raw else DEFAULT_PROFILES_DIR
+
+
+def _load_profile_arg(profile: str | None, profiles_dir: str | None):
+    if profile is None:
+        return None
+    from .profiles import load_profile
+
+    return load_profile(profile, _profiles_dir(profiles_dir))
+
+
+def _print_json(value: Any) -> None:
+    print(json.dumps(value, indent=2, sort_keys=True))
 
 
 def _parse_app_ids(raw: str | None) -> list[AppId]:
@@ -75,7 +105,7 @@ def _prompt_deselect(title: str, ids: list[str]) -> set[str]:
 
 
 def _render_preview(discovered_apps: list[DiscoveredApp], mcps: list[DiscoveredMCP], plans: list[_AppPlan]) -> None:
-    print("=== strip-mcp setup preview ===")
+    print("=== toolgate setup preview ===")
 
     print("\nDiscovered apps:")
     if not discovered_apps:
@@ -279,7 +309,7 @@ def _build_plans(
 
 
 _CLAUDE_CODE_SETTINGS = Path.home() / ".claude" / "settings.json"
-_CLAUDE_CODE_ENV_VAR = "STRIP_MCP_CLAUDE_CODE_CONFIG"
+_CLAUDE_CODE_ENV_VAR = "TOOLGATE_CLAUDE_CODE_CONFIG"
 
 
 def _claude_code_settings_path(override: str | None = None) -> Path:
@@ -291,14 +321,14 @@ def _claude_code_settings_path(override: str | None = None) -> Path:
     return _CLAUDE_CODE_SETTINGS
 
 
-def _is_strip_proxy_entry(server_id: str, entry: dict[str, Any]) -> bool:
-    if server_id != "strip":
+def _is_toolgate_proxy_entry(server_id: str, entry: dict[str, Any]) -> bool:
+    if server_id != "toolgate":
         return False
     command = str(entry.get("command", ""))
     args = entry.get("args", [])
     if not isinstance(args, list):
         return False
-    return "strip-mcp" in command and "proxy" in args
+    return "toolgate" in command and "proxy" in args
 
 
 def _run_install(args: argparse.Namespace) -> int:
@@ -323,14 +353,14 @@ def _run_install(args: argparse.Namespace) -> int:
 
     existing_mcps: dict = host_config.get("mcpServers", {})
 
-    # Resolve strip-mcp binary (absolute path, required since Claude Code may not share PATH)
-    strip_bin = _shutil.which("strip-mcp") or str(Path(sys.executable).parent / "strip-mcp")
+    # Resolve toolgate binary (absolute path, required since Claude Code may not share PATH)
+    toolgate_bin = _shutil.which("toolgate") or str(Path(sys.executable).parent / "toolgate")
 
-    # Build ProxyConfig from existing non-strip-proxy mcpServers (if any)
+    # Build ProxyConfig from existing non-toolgate-proxy mcpServers (if any)
     filtered_mcps: dict[str, Any] = {
         sid: entry
         for sid, entry in existing_mcps.items()
-        if isinstance(entry, dict) and not _is_strip_proxy_entry(sid, entry)
+        if isinstance(entry, dict) and not _is_toolgate_proxy_entry(sid, entry)
     }
 
     if filtered_mcps:
@@ -361,10 +391,10 @@ def _run_install(args: argparse.Namespace) -> int:
         print(f"Add servers to {proxy_config_path} first, then re-run install.", file=sys.stderr)
         return 1
 
-    # Build new settings.json with single strip entry
+    # Build new settings.json with single toolgate entry
     new_mcp_servers: dict = {
-        "strip": {
-            "command": strip_bin,
+        "toolgate": {
+            "command": toolgate_bin,
             "args": ["proxy", "--config", str(proxy_config_path)],
         }
     }
@@ -373,14 +403,14 @@ def _run_install(args: argparse.Namespace) -> int:
     # Preview
     print(f"Claude Code settings: {settings_path}")
     print(f"Proxy config:         {proxy_config_path}")
-    print(f"strip-mcp binary:     {strip_bin}")
+    print(f"toolgate binary:     {toolgate_bin}")
     print(f"\nUpstream servers to proxy ({len(proxy_config.servers)}):")
     for sid, entry in proxy_config.servers.items():
         print(f"  {sid}: {' '.join(entry.command)}")
     if not proxy_config.servers:
         print("  (none — populate proxy config before use)")
     print(f"\nmcpServers will become:")
-    print(f"  strip → {strip_bin} proxy --config {proxy_config_path}")
+    print(f"  toolgate → {toolgate_bin} proxy --config {proxy_config_path}")
 
     if existing_mcps:
         print(f"\nOriginal mcpServers ({len(existing_mcps)} entries) will be backed up to proxy config.")
@@ -470,14 +500,14 @@ def _run_uninstall(args: argparse.Namespace) -> int:
 
 
 def _run_proxy(args: argparse.Namespace) -> int:
-    from .proxy.config import DEFAULT_CONFIG_PATH, ProxyConfig
+    from .proxy.config import ProxyConfig
     from .proxy.server import ProxyServer
 
-    config_path = Path(args.config).expanduser().resolve() if args.config else DEFAULT_CONFIG_PATH
+    config_path = _proxy_config_path(args.config)
 
     if not config_path.exists():
         print(f"Config not found: {config_path}", file=sys.stderr)
-        print("Create one manually or run 'strip-mcp install --dry-run' to preview setup.", file=sys.stderr)
+        print("Create one manually or run 'toolgate install --dry-run' to preview setup.", file=sys.stderr)
         return 1
 
     try:
@@ -490,13 +520,195 @@ def _run_proxy(args: argparse.Namespace) -> int:
         print("No servers configured in proxy config.", file=sys.stderr)
         return 1
 
-    asyncio.run(ProxyServer(config).run())
+    try:
+        profile = _load_profile_arg(getattr(args, "profile", None), getattr(args, "profiles_dir", None))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    asyncio.run(ProxyServer(config, profile=profile).run())
+    return 0
+
+
+def _run_collect(args: argparse.Namespace) -> int:
+    from .catalog import Catalog
+    from .collector import collect_inventory
+    from .proxy.config import ProxyConfig
+
+    config_path = _proxy_config_path(args.config)
+    catalog_path = _catalog_path(args.catalog)
+    if not config_path.exists():
+        print(f"Config not found: {config_path}", file=sys.stderr)
+        return 1
+    try:
+        config = ProxyConfig.load(config_path)
+        report = asyncio.run(collect_inventory(config, Catalog(catalog_path)))
+    except Exception as exc:  # noqa: BLE001
+        print(f"Collection failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "catalog": str(catalog_path),
+        "ok_count": report.ok_count,
+        "failed_count": report.failed_count,
+        "results": [
+            {
+                "server_id": result.server_id,
+                "status": result.status,
+                "tool_count": result.tool_count,
+                "error": result.error,
+            }
+            for result in report.results
+        ],
+    }
+    if args.as_json:
+        _print_json(payload)
+    else:
+        print(f"Catalog: {catalog_path}")
+        for result in report.results:
+            suffix = f" ({result.error})" if result.error else ""
+            print(f"{result.server_id}: {result.status}, {result.tool_count} tools{suffix}")
+    return 1 if report.failed_count else 0
+
+
+def _run_daemon(args: argparse.Namespace) -> int:
+    from .daemon import DaemonAddress, ToolDaemon
+    from .proxy.config import ProxyConfig
+
+    config_path = _proxy_config_path(args.config)
+    if not config_path.exists():
+        print(f"Config not found: {config_path}", file=sys.stderr)
+        return 1
+    try:
+        config = ProxyConfig.load(config_path)
+        profile = _load_profile_arg(args.profile, args.profiles_dir)
+        asyncio.run(ToolDaemon(config, profile=profile).run(DaemonAddress(args.host, args.port)))
+    except KeyboardInterrupt:
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"Daemon failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _run_profiles(args: argparse.Namespace) -> int:
+    from .profiles import list_profiles
+
+    try:
+        profiles = list_profiles(_profiles_dir(args.profiles_dir))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    payload = [
+        {"id": profile.id, "description": profile.description}
+        for profile in profiles
+    ]
+    if args.as_json:
+        _print_json(payload)
+    else:
+        for item in payload:
+            desc = f" - {item['description']}" if item["description"] else ""
+            print(f"{item['id']}{desc}")
+    return 0
+
+
+def _format_tools(tools: list[dict[str, Any]], fmt: str) -> None:
+    if fmt == "json":
+        _print_json(tools)
+        return
+    for tool in tools:
+        tag = "[params]" if tool.get("requires_params") else "[no params]"
+        print(f"{tool['tool_id']}: {tool['description']} {tag}")
+
+
+def _tools_from_catalog(args: argparse.Namespace) -> list[dict[str, Any]]:
+    from .catalog import Catalog
+
+    catalog = Catalog(_catalog_path(args.catalog))
+    tools = catalog.search_tools(args.query) if getattr(args, "query", None) else catalog.list_tools()
+    profile = _load_profile_arg(args.profile, args.profiles_dir)
+    if profile:
+        tools = profile.filter_catalog_tools(tools)
+    return [
+        {
+            "tool_id": tool.tool_id,
+            "server_id": tool.server_id,
+            "description": profile.description_overrides.get(tool.tool_id, tool.description) if profile else tool.description,
+            "requires_params": tool.requires_params,
+        }
+        for tool in tools
+    ]
+
+
+def _run_tools(args: argparse.Namespace) -> int:
+    try:
+        tools = _tools_from_catalog(args)
+    except (OSError, ValueError, KeyError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _format_tools(tools, args.format)
+    return 0
+
+
+def _run_schema(args: argparse.Namespace) -> int:
+    from .catalog import Catalog
+
+    try:
+        profile = _load_profile_arg(args.profile, args.profiles_dir)
+        tool = Catalog(_catalog_path(args.catalog)).get_tool(args.tool_id)
+        if profile and not profile.allows(tool.tool_id, tool.server_id):
+            print(f"Tool not available in profile: {args.tool_id}", file=sys.stderr)
+            return 1
+        _print_json(tool.input_schema)
+    except (OSError, ValueError, KeyError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0
+
+
+def _run_call(args: argparse.Namespace) -> int:
+    from .daemon import DaemonAddress, request_daemon
+
+    try:
+        arguments = json.loads(args.json_args) if args.json_args else {}
+    except json.JSONDecodeError as exc:
+        print(f"Invalid --json: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(arguments, dict):
+        print("--json must decode to an object", file=sys.stderr)
+        return 2
+    try:
+        response = asyncio.run(
+            request_daemon(
+                {"action": "call", "tool_id": args.tool_id, "arguments": arguments},
+                DaemonAddress(args.host, args.port),
+            )
+        )
+    except (OSError, RuntimeError, json.JSONDecodeError) as exc:
+        print(f"Daemon request failed: {exc}", file=sys.stderr)
+        return 1
+    if not response.get("ok"):
+        print(response.get("error", "Unknown daemon error"), file=sys.stderr)
+        return 1
+    _print_json(response["result"])
+    return 0
+
+
+def _run_daemon_status(args: argparse.Namespace) -> int:
+    from .daemon import DaemonAddress, request_daemon
+
+    try:
+        response = asyncio.run(request_daemon({"action": "status"}, DaemonAddress(args.host, args.port)))
+    except (OSError, RuntimeError, json.JSONDecodeError) as exc:
+        print(f"Daemon request failed: {exc}", file=sys.stderr)
+        return 1
+    _print_json(response)
     return 0
 
 
 def _run_setup(args: argparse.Namespace) -> int:
     if platform.system() != "Darwin":
-        print("strip-mcp setup currently supports macOS (Darwin) only.", file=sys.stderr)
+        print("toolgate setup currently supports macOS (Darwin) only.", file=sys.stderr)
         return 2
 
     if args.mode != "direct":
@@ -626,31 +838,89 @@ def _run_setup(args: argparse.Namespace) -> int:
 
 def _add_install_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--claude-config", default=None, help=f"Override path to Claude Code settings.json (env: {_CLAUDE_CODE_ENV_VAR})")
-    p.add_argument("--proxy-config", default=None, help="Path to strip-mcp proxy config (default: ~/.strip-mcp/config.json)")
+    p.add_argument("--proxy-config", default=None, help="Path to toolgate proxy config (default: ~/.toolgate/config.json)")
     p.add_argument("--dry-run", action="store_true", help="Preview changes without writing")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="strip-mcp")
+    parser = argparse.ArgumentParser(prog="toolgate")
     sub = parser.add_subparsers(dest="subcommand")
 
     proxy = sub.add_parser(
         "proxy",
-        help="Run the strip-mcp proxy server (MCP server-side, reads JSON-RPC from stdin)",
+        help="Run the toolgate proxy server (MCP server-side, reads JSON-RPC from stdin)",
     )
     proxy.add_argument(
         "--config",
         default=None,
-        help="Path to proxy config JSON (default: ~/.strip-mcp/config.json)",
+        help="Path to proxy config JSON (default: ~/.toolgate/config.json)",
     )
+    proxy.add_argument("--profile", default=None, help="Profile id to expose")
+    proxy.add_argument("--profiles-dir", default=None, help="Directory containing profile JSON files")
+
+    collect = sub.add_parser(
+        "collect",
+        help="Probe configured MCP servers and write the SQLite inventory catalog",
+    )
+    collect.add_argument("--config", default=None, help="Path to proxy config JSON")
+    collect.add_argument("--catalog", default=None, help="Path to inventory catalog DB")
+    collect.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON report")
+
+    daemon = sub.add_parser(
+        "daemon",
+        help="Run the local toolgate JSON-line daemon for CLI tool calls",
+    )
+    daemon_sub = daemon.add_subparsers(dest="daemon_command")
+    daemon_run = daemon_sub.add_parser("run", help="Start the daemon")
+    daemon_run.add_argument("--config", default=None, help="Path to proxy config JSON")
+    daemon_run.add_argument("--profile", default=None, help="Profile id to enforce")
+    daemon_run.add_argument("--profiles-dir", default=None, help="Directory containing profile JSON files")
+    daemon_run.add_argument("--host", default="127.0.0.1", help="Bind host")
+    daemon_run.add_argument("--port", default=8765, type=int, help="Bind port")
+    daemon_status = daemon_sub.add_parser("status", help="Query daemon status")
+    daemon_status.add_argument("--host", default="127.0.0.1", help="Daemon host")
+    daemon_status.add_argument("--port", default=8765, type=int, help="Daemon port")
+
+    tools = sub.add_parser(
+        "tools",
+        help="List or search collected tools from the SQLite catalog",
+    )
+    tools_sub = tools.add_subparsers(dest="tools_command")
+    tools_list = tools_sub.add_parser("list", help="List collected tools")
+    tools_list.add_argument("--catalog", default=None, help="Path to inventory catalog DB")
+    tools_list.add_argument("--profile", default=None, help="Profile id to filter")
+    tools_list.add_argument("--profiles-dir", default=None, help="Directory containing profile JSON files")
+    tools_list.add_argument("--format", choices=["text", "json"], default="json")
+    tools_search = tools_sub.add_parser("search", help="Search collected tools")
+    tools_search.add_argument("query")
+    tools_search.add_argument("--catalog", default=None, help="Path to inventory catalog DB")
+    tools_search.add_argument("--profile", default=None, help="Profile id to filter")
+    tools_search.add_argument("--profiles-dir", default=None, help="Directory containing profile JSON files")
+    tools_search.add_argument("--format", choices=["text", "json"], default="json")
+
+    schema = sub.add_parser("schema", help="Print a collected tool input schema")
+    schema.add_argument("tool_id")
+    schema.add_argument("--catalog", default=None, help="Path to inventory catalog DB")
+    schema.add_argument("--profile", default=None, help="Profile id to enforce")
+    schema.add_argument("--profiles-dir", default=None, help="Directory containing profile JSON files")
+
+    call = sub.add_parser("call", help="Call a tool through a running toolgate daemon")
+    call.add_argument("tool_id")
+    call.add_argument("--json", dest="json_args", default=None, help="JSON object arguments")
+    call.add_argument("--host", default="127.0.0.1", help="Daemon host")
+    call.add_argument("--port", default=8765, type=int, help="Daemon port")
+
+    profiles = sub.add_parser("profiles", help="List profile files")
+    profiles.add_argument("--profiles-dir", default=None, help="Directory containing profile JSON files")
+    profiles.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON")
 
     _add_install_args(sub.add_parser(
         "install",
-        help="Install strip-mcp proxy into Claude Code settings.json",
+        help="Install toolgate proxy into Claude Code settings.json",
     ))
     _add_install_args(sub.add_parser(
         "uninstall",
-        help="Remove strip-mcp proxy and restore original mcpServers",
+        help="Remove toolgate proxy and restore original mcpServers",
     ))
 
     setup = sub.add_parser(
@@ -693,6 +963,32 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.subcommand == "proxy":
         return _run_proxy(args)
+
+    if args.subcommand == "collect":
+        return _run_collect(args)
+
+    if args.subcommand == "daemon":
+        if args.daemon_command == "run":
+            return _run_daemon(args)
+        if args.daemon_command == "status":
+            return _run_daemon_status(args)
+        parser.print_help()
+        return 1
+
+    if args.subcommand == "tools":
+        if args.tools_command in {"list", "search"}:
+            return _run_tools(args)
+        parser.print_help()
+        return 1
+
+    if args.subcommand == "schema":
+        return _run_schema(args)
+
+    if args.subcommand == "call":
+        return _run_call(args)
+
+    if args.subcommand == "profiles":
+        return _run_profiles(args)
 
     if args.subcommand == "install":
         return _run_install(args)

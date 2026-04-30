@@ -13,7 +13,7 @@ from typing import Any
 
 from .models import AppId, DiscoveredApp, DiscoveredMCP
 
-_MANAGED_KEY = "_stripMcpManaged"
+_MANAGED_KEY = "_toolgateManaged"
 
 
 @dataclass
@@ -165,7 +165,7 @@ def _merge_managed_servers(
     if next_managed:
         new_config[_MANAGED_KEY] = {
             "version": 1,
-            "source": "strip-mcp",
+            "source": "toolgate",
             "app": app_id,
             "serverIds": sorted(next_managed),
         }
@@ -280,7 +280,7 @@ def get_host_adapters() -> dict[AppId, HostAdapter]:
         "claude": JsonMcpHostAdapter(
             app_id="claude",
             display_name="Claude",
-            env_var="STRIP_MCP_CLAUDE_CONFIG",
+            env_var="TOOLGATE_CLAUDE_CONFIG",
             candidate_paths=[
                 "Library/Application Support/Claude/claude_desktop_config.json",
                 ".claude/claude_desktop_config.json",
@@ -293,7 +293,7 @@ def get_host_adapters() -> dict[AppId, HostAdapter]:
         "cursor": JsonMcpHostAdapter(
             app_id="cursor",
             display_name="Cursor",
-            env_var="STRIP_MCP_CURSOR_CONFIG",
+            env_var="TOOLGATE_CURSOR_CONFIG",
             candidate_paths=[
                 "Library/Application Support/Cursor/User/mcp.json",
                 ".cursor/mcp.json",

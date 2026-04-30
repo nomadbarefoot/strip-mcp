@@ -9,13 +9,13 @@ from pathlib import Path
 # Add src to path for running without install
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from strip_mcp import StripMCP
+from toolgate import ToolGate
 
 MOCK = [sys.executable, str(Path(__file__).parent.parent / "tests" / "mock_mcp_server.py")]
 
 
 async def main() -> None:
-    async with StripMCP() as mcp:
+    async with ToolGate() as mcp:
         mcp.add_server("demo", command=MOCK + ["--tools", "5"])
         await mcp.start()
 

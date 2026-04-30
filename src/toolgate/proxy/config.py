@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-DEFAULT_CONFIG_PATH = Path.home() / ".strip-mcp" / "config.json"
+DEFAULT_CONFIG_PATH = Path.home() / ".toolgate" / "config.json"
 
 
 @dataclass

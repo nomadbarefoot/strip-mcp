@@ -1,12 +1,12 @@
-# Claude Code Proxy (strip-mcp)
+# Claude Code Proxy (toolgate)
 
 This document explains **what the Claude Code proxy delivers**, **how it delivers it (on-the-wire)**, and **how the full pipeline works end-to-end**.
 
 It describes the implementation currently in:
 
-- `src/strip_mcp/proxy/server.py`
-- `src/strip_mcp/proxy/config.py`
-- CLI wiring in `src/strip_mcp/cli.py`
+- `src/toolgate/proxy/server.py`
+- `src/toolgate/proxy/config.py`
+- CLI wiring in `src/toolgate/cli.py`
 - Tests in `tests/test_proxy_server.py` and `test_proxy_live.py`
 
 ---
@@ -18,7 +18,7 @@ The proxy is an **MCP server-side stdio proxy** that sits between:
 - **MCP client**: Claude Code (or any MCP-capable client)
 - **Upstream MCP servers**: Playwright MCP, filesystem MCP, etc.
 
-The proxy itself speaks **JSON-RPC 2.0 over newline-delimited stdio** to the client, and uses `StripMCP` internally to manage multiple upstream servers and route tool calls.
+The proxy itself speaks **JSON-RPC 2.0 over newline-delimited stdio** to the client, and uses `ToolGate` internally to manage multiple upstream servers and route tool calls.
 
 The purpose is to implement **staged tool delivery** so the client doesn’t ingest large JSON Schemas for every tool up front.
 
@@ -38,15 +38,15 @@ On `tools/list`, the proxy returns:
   - `inputSchema`: a **stub** schema with:
     - `properties: {}`
     - `additionalProperties: true`
-- One additional “meta-tool” named **`__strip__get_schema`** with a real input schema.
+- One additional “meta-tool” named **`__toolgate__get_schema`** with a real input schema.
 
 This is intentionally minimal. The stub `inputSchema` prevents Claude Code from receiving huge tool schemas in Stage 1.
 
-### Stage 2: `__strip__get_schema` returns the *real schema* on demand
+### Stage 2: `__toolgate__get_schema` returns the *real schema* on demand
 
 When the client needs the real parameters for a tool, it calls:
 
-- `tools/call` with `name="__strip__get_schema"`
+- `tools/call` with `name="__toolgate__get_schema"`
 - Arguments: `{ "tool_name": "<exact namespaced tool name>" }`
 
 The proxy responds with an MCP tool result whose `content[0].text` is **pretty-printed JSON** for the upstream tool’s `inputSchema`.
@@ -60,7 +60,7 @@ Notes:
 
 For any other `tools/call` name:
 
-- The proxy routes the call through `StripMCP.call(tool_name, arguments)` to the correct upstream server.
+- The proxy routes the call through `ToolGate.call(tool_name, arguments)` to the correct upstream server.
 - It returns an MCP tool result:
   - `{ result: { content: [...], isError: <bool> } }`
 
@@ -110,13 +110,13 @@ Any other method:
 
 The CLI includes an “install into Claude Code” helper:
 
-- `strip-mcp install [--proxy-config PATH] [--claude-config PATH] [--dry-run]`
+- `toolgate install [--proxy-config PATH] [--claude-config PATH] [--dry-run]`
 
 What it does:
 
-1. Reads Claude Code settings JSON (default `~/.claude/settings.json`, overridable via `STRIP_MCP_CLAUDE_CODE_CONFIG`).
+1. Reads Claude Code settings JSON (default `~/.claude/settings.json`, overridable via `TOOLGATE_CLAUDE_CODE_CONFIG`).
 2. Reads existing `mcpServers` entries.
-3. Writes a `ProxyConfig` JSON (default `~/.strip-mcp/config.json`) that stores:
+3. Writes a `ProxyConfig` JSON (default `~/.toolgate/config.json`) that stores:
    - `servers`: upstream server IDs and their `command` arrays
    - `original_mcp_servers`: the original Claude Code `mcpServers` dict (for clean uninstall)
 4. Rewrites Claude Code’s `mcpServers` to a **single entry**:
@@ -124,15 +124,15 @@ What it does:
 ```json
 {
   "mcpServers": {
-    "strip": {
-      "command": "<absolute path to strip-mcp>",
+    "toolgate": {
+      "command": "<absolute path to toolgate>",
       "args": ["proxy", "--config", "<path to proxy config>"]
     }
   }
 }
 ```
 
-On uninstall (`strip-mcp uninstall`), it restores `mcpServers` from `original_mcp_servers`.
+On uninstall (`toolgate uninstall`), it restores `mcpServers` from `original_mcp_servers`.
 
 ### 1) Startup: `initialize` returns immediately, upstreams start in background
 
@@ -145,7 +145,7 @@ When Claude Code starts the MCP server, it sends:
 The proxy:
 
 - immediately responds with `protocolVersion`, `capabilities.tools`, and `serverInfo`
-- starts an async background task to connect to upstream servers (`StripMCP.start()`)
+- starts an async background task to connect to upstream servers (`ToolGate.start()`)
 
 This is important because some upstreams may be slow to spawn; the proxy must not block initialization.
 
@@ -169,12 +169,12 @@ The response shape:
     "tools": [
       {
         "name": "playwright__browser_navigate",
-        "description": "… (call __strip__get_schema to get parameters before use)",
+        "description": "… (call __toolgate__get_schema to get parameters before use)",
         "inputSchema": { "type":"object", "properties":{}, "additionalProperties":true }
       },
       // ... many tools ...
       {
-        "name": "__strip__get_schema",
+        "name": "__toolgate__get_schema",
         "description": "Returns the full parameter schema for any upstream tool. …",
         "inputSchema": {
           "type":"object",
@@ -199,7 +199,7 @@ Request:
   "id":3,
   "method":"tools/call",
   "params":{
-    "name":"__strip__get_schema",
+    "name":"__toolgate__get_schema",
     "arguments":{"tool_name":"playwright__browser_navigate"}
   }
 }
@@ -263,20 +263,20 @@ If the tool name is unknown, the proxy returns a JSON-RPC error:
 
 ## How upstream routing works inside the proxy
 
-Internally the proxy uses `StripMCP`:
+Internally the proxy uses `ToolGate`:
 
 - For each upstream in `ProxyConfig.servers`, it calls:
-  - `StripMCP.add_server(server_id, command=[...], staged=True, namespace=True)`
+  - `ToolGate.add_server(server_id, command=[...], staged=True, namespace=True)`
 
 Key implications:
 
 - **Namespacing is always on**: upstream tools are presented as `{server_id}__{tool}`.
-- **Stage 1 is always brief** at the upstream `StripMCP` level too (by passing `staged=True`).
+- **Stage 1 is always brief** at the upstream `ToolGate` level too (by passing `staged=True`).
 - The proxy itself then *forces* the client-facing schema to be stubbed (Stage 1), regardless of upstream behavior.
 
 During execution:
 
-- `StripMCP` resolves the namespaced tool to a specific upstream server via `ToolRegistry`.
+- `ToolGate` resolves the namespaced tool to a specific upstream server via `ToolRegistry`.
 - The selected upstream `ServerHandle` performs the real JSON-RPC `tools/call` against that server’s subprocess.
 
 ---
@@ -301,7 +301,7 @@ It prints:
 
 - The `initialize` response
 - A summary of `tools/list` showing stub schemas
-- A `__strip__get_schema` call showing a real schema
+- A `__toolgate__get_schema` call showing a real schema
 - A token/size comparison between:
   - proxy brief `tools/list`
   - direct upstream `tools/list`

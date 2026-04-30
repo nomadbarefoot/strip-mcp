@@ -74,23 +74,23 @@ Update `status: resolved`. Replace the full thread body with a one-line `[decisi
 ### DISC-20260407-001: Proxy MCP server — session restart needed
 - opened_by: claude-code
 - opened_at: 2026-04-07T07:00:00Z
-- topic: src/strip_mcp/proxy/server.py, ~/.claude.json
+- topic: src/toolgate/proxy/server.py, ~/.claude.json
 - status: resolved
 
 **[claude-code] [2026-04-07T13:45:00Z] [decision]**
 All 3 stages verified working. Root cause of missing connection was wrong config file — `mcpServers` in `~/.claude/settings.json` is ignored by Claude Code; local MCPs must be registered in `~/.claude.json` via `claude mcp add`. Now fixed. Restart required to connect in the new session.
 
 **What was confirmed (manual JSON-RPC test, 2026-04-07):**
-- Stage 1 `tools/list`: 22 tools (21 playwright + `__strip__get_schema`), all with stub schemas `{"type":"object","properties":{},"additionalProperties":true}` ✓
-- Stage 2 `__strip__get_schema`: returns real `inputSchema` as JSON text in `content[0].text` — parsed directly (not wrapped in an outer key) ✓
+- Stage 1 `tools/list`: 22 tools (21 playwright + `__toolgate__get_schema`), all with stub schemas `{"type":"object","properties":{},"additionalProperties":true}` ✓
+- Stage 2 `__toolgate__get_schema`: returns real `inputSchema` as JSON text in `content[0].text` — parsed directly (not wrapped in an outer key) ✓
 - Stage 3 `tools/call playwright__browser_navigate`: navigated to `https://example.com`, got page title + snapshot, `isError: false` ✓
 
 **Current config (as of 2026-04-07):**
-- `~/.claude.json` → `mcpServers.strip` → `strip-mcp proxy --config .../test-proxy-config.json` (type: stdio, scope: user)
+- `~/.claude.json` → `mcpServers.toolgate` → `toolgate proxy --config .../test-proxy-config.json` (type: stdio, scope: user)
 - `test-proxy-config.json` → upstream: `playwright` → `node .../node_modules/@playwright/mcp/cli.js`
 - `~/.claude/settings.json` → stale `mcpServers` block removed
 
-**Next action on restart:** Run `/mcp` — `strip` should show as connected. Spawn a subagent to do a live in-session test: list tools, call `__strip__get_schema`, call a playwright tool end-to-end.
+**Next action on restart:** Run `/mcp` — `toolgate` should show as connected. Spawn a subagent to do a live in-session test: list tools, call `__toolgate__get_schema`, call a playwright tool end-to-end.
 
 ---
 

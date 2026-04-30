@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live test: spawns strip-mcp proxy against Playwright MCP and exercises the 2-stage flow."""
+"""Live test: spawns toolgate proxy against Playwright MCP and exercises the 2-stage flow."""
 
 from __future__ import annotations
 
@@ -10,16 +10,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from strip_mcp.connection.stdio import StdioConnection
+from toolgate.connection.stdio import StdioConnection
 
 
 async def main() -> None:
     config = Path(__file__).parent / "test-proxy-config.json"
     venv_python = Path(__file__).parent / ".venv" / "bin" / "python"
     python = str(venv_python) if venv_python.exists() else sys.executable
-    proxy_cmd = [python, "-m", "strip_mcp.cli", "proxy", "--config", str(config)]
+    proxy_cmd = [python, "-m", "toolgate.cli", "proxy", "--config", str(config)]
 
-    print("=== Spawning strip-mcp proxy ===")
+    print("=== Spawning toolgate proxy ===")
     conn = StdioConnection(proxy_cmd, "proxy")
 
     # Stage 0: initialize handshake
@@ -30,8 +30,8 @@ async def main() -> None:
     raw_tools = await conn.list_tools()
     print(f"\n[tools/list] Got {len(raw_tools)} tools (including meta-tool)")
 
-    meta = next((t for t in raw_tools if t["name"] == "__strip__get_schema"), None)
-    upstream = [t for t in raw_tools if t["name"] != "__strip__get_schema"]
+    meta = next((t for t in raw_tools if t["name"] == "__toolgate__get_schema"), None)
+    upstream = [t for t in raw_tools if t["name"] != "__toolgate__get_schema"]
 
     print(f"  Meta-tool present: {meta is not None}")
     print(f"  Upstream tools: {len(upstream)}")
@@ -45,9 +45,9 @@ async def main() -> None:
     # Stage 2: get schema for a specific tool
     if upstream:
         target = upstream[0]["name"]
-        print(f"\n[Stage 2] Calling __strip__get_schema for {target!r}")
+        print(f"\n[Stage 2] Calling __toolgate__get_schema for {target!r}")
         result = await conn.call_tool(
-            "__strip__get_schema",
+            "__toolgate__get_schema",
             {"tool_name": target},
             timeout=15.0,
         )
@@ -63,7 +63,7 @@ async def main() -> None:
         target2 = param_tools[0]["name"]
         print(f"\n[Stage 2] Fetching schema for {target2!r} (has params)")
         result2 = await conn.call_tool(
-            "__strip__get_schema", {"tool_name": target2}, timeout=10.0
+            "__toolgate__get_schema", {"tool_name": target2}, timeout=10.0
         )
         schema2_text = result2.get("content", [{}])[0].get("text", "")
         schema2 = json.loads(schema2_text)
@@ -72,7 +72,7 @@ async def main() -> None:
 
     # Token comparison: proxy brief list vs direct raw Playwright tools/list
     playwright_conn = StdioConnection(
-        ["node", "/Users/ayan/Documents/LM_Projects/strip-mcp/node_modules/@playwright/mcp/cli.js"],
+        ["node", str(Path(__file__).parent / "node_modules" / "@playwright" / "mcp" / "cli.js")],
         "playwright-direct",
     )
     await playwright_conn.initialize()

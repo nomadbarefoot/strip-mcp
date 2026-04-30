@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from strip_mcp.connection.stdio import StdioConnection
+from toolgate.connection.stdio import StdioConnection
 
 PYTHON = sys.executable
 MOCK_SERVER = str(Path(__file__).parent / "mock_mcp_server.py")
-PROXY_MODULE = "strip_mcp.cli"
+PROXY_MODULE = "toolgate.cli"
 
 _TIMEOUT = 10.0
 
@@ -57,7 +57,7 @@ async def test_initialize_returns_immediately() -> None:
     config = _make_proxy_config()
     conn = StdioConnection(_proxy_cmd(config), "proxy-test")
     result = await asyncio.wait_for(conn.initialize(), timeout=5.0)
-    assert result.get("serverInfo", {}).get("name") == "strip-mcp-proxy"
+    assert result.get("serverInfo", {}).get("name") == "toolgate-proxy"
     await conn.close()
 
 
@@ -69,7 +69,7 @@ async def test_tools_list_includes_meta_tool() -> None:
     try:
         tools = await conn.list_tools()
         names = {t["name"] for t in tools}
-        assert "__strip__get_schema" in names
+        assert "__toolgate__get_schema" in names
     finally:
         await conn.close()
 
@@ -80,7 +80,7 @@ async def test_tools_list_stubs_have_empty_properties() -> None:
     conn = await _get_conn(config)
     try:
         tools = await conn.list_tools()
-        upstream = [t for t in tools if t["name"] != "__strip__get_schema"]
+        upstream = [t for t in tools if t["name"] != "__toolgate__get_schema"]
         assert len(upstream) == 5
         for t in upstream:
             schema = t.get("inputSchema", {})
@@ -96,7 +96,7 @@ async def test_tools_list_names_are_namespaced() -> None:
     conn = await _get_conn(config)
     try:
         tools = await conn.list_tools()
-        upstream = [t for t in tools if t["name"] != "__strip__get_schema"]
+        upstream = [t for t in tools if t["name"] != "__toolgate__get_schema"]
         for t in upstream:
             assert t["name"].startswith("mock__"), f"Expected namespace: {t['name']}"
     finally:
@@ -104,15 +104,15 @@ async def test_tools_list_names_are_namespaced() -> None:
 
 
 async def test_tools_list_param_tools_include_hint() -> None:
-    """Tools that require params should mention __strip__get_schema in description."""
+    """Tools that require params should mention __toolgate__get_schema in description."""
     config = _make_proxy_config(["--tools", "5"])
     conn = await _get_conn(config)
     try:
         tools = await conn.list_tools()
-        upstream = [t for t in tools if t["name"] != "__strip__get_schema"]
+        upstream = [t for t in tools if t["name"] != "__toolgate__get_schema"]
         param_tools = [t for t in upstream if "no params" not in t["description"]]
         for t in param_tools:
-            assert "__strip__get_schema" in t["description"], (
+            assert "__toolgate__get_schema" in t["description"], (
                 f"{t['name']} missing schema hint: {t['description']}"
             )
     finally:
@@ -120,12 +120,12 @@ async def test_tools_list_param_tools_include_hint() -> None:
 
 
 async def test_meta_tool_has_full_schema() -> None:
-    """__strip__get_schema must have a real inputSchema with tool_name property."""
+    """__toolgate__get_schema must have a real inputSchema with tool_name property."""
     config = _make_proxy_config()
     conn = await _get_conn(config)
     try:
         tools = await conn.list_tools()
-        meta = next(t for t in tools if t["name"] == "__strip__get_schema")
+        meta = next(t for t in tools if t["name"] == "__toolgate__get_schema")
         props = meta["inputSchema"].get("properties", {})
         assert "tool_name" in props
         assert meta["inputSchema"].get("required") == ["tool_name"]
@@ -133,7 +133,7 @@ async def test_meta_tool_has_full_schema() -> None:
         await conn.close()
 
 
-# ── __strip__get_schema (Stage 2) ─────────────────────────────────────────────
+# ── __toolgate__get_schema (Stage 2) ─────────────────────────────────────────────
 
 async def test_get_schema_returns_full_schema() -> None:
     """Stage 2: get_schema for a param tool returns non-empty properties."""
@@ -143,7 +143,7 @@ async def test_get_schema_returns_full_schema() -> None:
         tools = await conn.list_tools()
         # mock tool_1 has arg_a and arg_b
         target = next(t["name"] for t in tools if t["name"].endswith("__tool_1"))
-        result = await conn.call_tool("__strip__get_schema", {"tool_name": target}, timeout=_TIMEOUT)
+        result = await conn.call_tool("__toolgate__get_schema", {"tool_name": target}, timeout=_TIMEOUT)
         schema_text = result["content"][0]["text"]
         schema = json.loads(schema_text)
         assert "arg_a" in schema.get("properties", {}), f"Expected arg_a in schema: {schema}"
@@ -159,7 +159,7 @@ async def test_get_schema_for_no_param_tool() -> None:
         tools = await conn.list_tools()
         # mock tool_0 has no params (i % 5 == 0)
         target = next(t["name"] for t in tools if t["name"].endswith("__tool_0"))
-        result = await conn.call_tool("__strip__get_schema", {"tool_name": target}, timeout=_TIMEOUT)
+        result = await conn.call_tool("__toolgate__get_schema", {"tool_name": target}, timeout=_TIMEOUT)
         schema_text = result["content"][0]["text"]
         schema = json.loads(schema_text)
         assert schema.get("properties") == {}
@@ -173,7 +173,7 @@ async def test_get_schema_unknown_tool_returns_error_content() -> None:
     conn = await _get_conn(config)
     try:
         result = await conn.call_tool(
-            "__strip__get_schema", {"tool_name": "nonexistent__tool"}, timeout=_TIMEOUT
+            "__toolgate__get_schema", {"tool_name": "nonexistent__tool"}, timeout=_TIMEOUT
         )
         assert result.get("isError") is True
         assert result["content"]
@@ -182,12 +182,12 @@ async def test_get_schema_unknown_tool_returns_error_content() -> None:
 
 
 async def test_get_schema_missing_tool_name_returns_error() -> None:
-    """Calling __strip__get_schema with no tool_name returns JSON-RPC error."""
+    """Calling __toolgate__get_schema with no tool_name returns JSON-RPC error."""
     config = _make_proxy_config()
     conn = await _get_conn(config)
     try:
         with pytest.raises(Exception):
-            await conn.call_tool("__strip__get_schema", {}, timeout=_TIMEOUT)
+            await conn.call_tool("__toolgate__get_schema", {}, timeout=_TIMEOUT)
     finally:
         await conn.close()
 
@@ -200,7 +200,7 @@ async def test_call_tool_routes_upstream() -> None:
     conn = await _get_conn(config)
     try:
         tools = await conn.list_tools()
-        target = next(t["name"] for t in tools if t["name"] != "__strip__get_schema")
+        target = next(t["name"] for t in tools if t["name"] != "__toolgate__get_schema")
         result = await conn.call_tool(target, {}, timeout=_TIMEOUT)
         assert result["content"]
         assert result.get("isError") is not True
@@ -258,7 +258,7 @@ async def test_concurrent_tool_calls_complete() -> None:
     conn = await _get_conn(config)
     try:
         tools = await conn.list_tools()
-        targets = [t["name"] for t in tools if t["name"] != "__strip__get_schema"][:3]
+        targets = [t["name"] for t in tools if t["name"] != "__toolgate__get_schema"][:3]
 
         results = await asyncio.gather(
             *[conn.call_tool(name, {}, timeout=_TIMEOUT) for name in targets]
@@ -276,7 +276,7 @@ async def test_high_concurrency_burst_remains_usable() -> None:
     conn = await _get_conn(config)
     try:
         tools = await conn.list_tools()
-        target = next(t["name"] for t in tools if t["name"] != "__strip__get_schema")
+        target = next(t["name"] for t in tools if t["name"] != "__toolgate__get_schema")
         results = await asyncio.gather(
             *[conn.call_tool(target, {}, timeout=_TIMEOUT) for _ in range(100)]
         )
